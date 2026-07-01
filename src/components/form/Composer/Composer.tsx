@@ -68,7 +68,7 @@ export const Composer = React.forwardRef<HTMLDivElement, ComposerProps>(({
   disabled,
   ...props
 }, forwardedRef): React.JSX.Element => {
-  const initialConfig = React.useMemo<InitialConfigType>(() => ({
+  const [initialConfig] = React.useState<InitialConfigType>(() => ({
     namespace: input?.name || namespace,
     theme: ComposerTheme,
     editorState: initialEditorState,
@@ -95,7 +95,7 @@ export const Composer = React.forwardRef<HTMLDivElement, ComposerProps>(({
 
       throw error;
     },
-  }), []); // eslint-disable-line react-hooks/exhaustive-deps -- only read once during initialization
+  }));
 
   const handleChange = React.useCallback((
     editorState: EditorState,

@@ -9,4 +9,6 @@ yarn-error.*
 
 .DS_Store
 Thumbs.db
-
+AGENTS.md
+.tmp
+.claude

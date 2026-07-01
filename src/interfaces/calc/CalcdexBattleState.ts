@@ -1,4 +1,5 @@
 import { type GameType, type GenerationNum } from '@smogon/calc';
+import { type HackmonsInferenceMap } from '@showdex/features/hackmons-cup-inference';
 import { type ElementSizeLabel } from '@showdex/utils/hooks';
 import { type CalcdexBattleField } from './CalcdexBattleField';
 import { type CalcdexBattleRules } from './CalcdexBattleRules';
@@ -72,6 +73,17 @@ export interface CalcdexBattleState extends CalcdexPlayerStates {
    * @since 0.1.3
    */
   battleNonce?: string;
+
+  /**
+   * Last synced `stepQueue.length` of the Showdown `battle` state.
+   *
+   * * Used to avoid skipping battle syncs when the `nonce` is unchanged but new battle log
+   *   steps have still been appended.
+   * * Only used when the `operatingMode` is `'battle'`.
+   *
+   * @since 1.3.0
+   */
+  battleStepQueueLength?: number;
 
   /**
    * User-provided saved Honkdex (aka. a "honk") name.
@@ -335,6 +347,17 @@ export interface CalcdexBattleState extends CalcdexPlayerStates {
    * @since 1.1.3
    */
   sheets: CalcdexPokemonPreset[];
+
+  /**
+   * Hackmons Cup damage-log spread estimates, keyed by defending Pokemon `calcdexId`.
+   *
+   * * Populated during `syncBattle()` from direct move damage events in `battle.stepQueue`.
+   * * Estimates are suggestions only; Calcdex never applies these IVs/EVs without a user action.
+   *
+   * @default null
+   * @since 1.3.0
+   */
+  hackmonsInference?: HackmonsInferenceMap;
 
   /**
    * Stringified Lexical editor states.

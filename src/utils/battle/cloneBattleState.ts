@@ -371,6 +371,27 @@ export const cloneBattleState = (
     output.sheets = clonePresets(output.sheets);
   }
 
+  if (nonEmptyObject(output.hackmonsInference)) {
+    output.hackmonsInference = Object.entries(output.hackmonsInference).reduce((inferences, [id, inference]) => {
+      inferences[id] = {
+        ...inference,
+        events: inference.events?.map((event) => ({ ...event })) || [],
+        speedNotes: [...(inference.speedNotes || [])],
+        estimate: inference.estimate ? {
+          ...inference.estimate,
+          ivs: { ...inference.estimate.ivs },
+          evs: { ...inference.estimate.evs },
+        } : null,
+        assumptions: inference.assumptions ? {
+          ...inference.assumptions,
+          notes: [...(inference.assumptions.notes || [])],
+        } : null,
+      };
+
+      return inferences;
+    }, {} as CalcdexBattleState['hackmonsInference']);
+  }
+
   AllPlayerKeys.forEach((playerKey) => {
     // note: don't care if the player is active or not, just as long as they're initialized
     if (nonEmptyObject(output[playerKey])) {

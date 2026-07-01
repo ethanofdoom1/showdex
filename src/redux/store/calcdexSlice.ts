@@ -138,6 +138,18 @@ export interface CalcdexSliceReducers {
   ) => void;
 
   /**
+   * Clears Hackmons Cup inference suggestions for an entire battle or one Pokemon.
+   *
+   * @since 1.3.0
+   */
+  resetHackmonsInference: (
+    state: Draft<CalcdexSliceState>,
+    action: PayloadAction<PickRequired<Partial<CalcdexBattleState>, 'battleId'> & {
+      pokemonId?: string;
+    }>,
+  ) => void;
+
+  /**
    * Destroys the entire `CalcdexBattleState` by the passed-in `battleId` represented as `action.payload`.
    *
    * @since 1.0.3
@@ -660,6 +672,26 @@ export const calcdexSlice = createSlice({
         '\n', 'payload', action.payload,
         '\n', 'battleState', __DEV__ && current(state)[battleId],
       );
+    },
+
+    resetHackmonsInference: (state, action) => {
+      const {
+        battleId,
+        pokemonId,
+      } = action.payload || {};
+
+      if (!battleId || !state[battleId]?.battleId) {
+        return;
+      }
+
+      if (!pokemonId) {
+        state[battleId].hackmonsInference = null;
+        return;
+      }
+
+      if (state[battleId].hackmonsInference?.[pokemonId]) {
+        delete state[battleId].hackmonsInference[pokemonId];
+      }
     },
 
     destroy: (state, action) => {

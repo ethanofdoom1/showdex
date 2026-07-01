@@ -20,6 +20,7 @@ import {
   type CalcdexPokemon,
   CalcdexPlayerKeys as AllPlayerKeys,
 } from '@showdex/interfaces/calc';
+import { syncHackmonsInference } from '@showdex/features/hackmons-cup-inference';
 import { type RootState } from '@showdex/redux/store';
 import {
   cloneBattleState,
@@ -123,11 +124,18 @@ export const syncBattle = createAsyncThunk<CalcdexBattleState, SyncBattlePayload
   // const battleState: CalcdexBattleState = structuredClone(state[battleId]);
   const battleState = cloneBattleState(state[battleId]);
 
-  if (battleState.battleNonce && battleState.battleNonce === battleNonce) {
+  const stepQueueLength = stepQueue?.length || 0;
+
+  if (
+    battleState.battleNonce
+    && battleState.battleNonce === battleNonce
+    && battleState.battleStepQueueLength === stepQueueLength
+  ) {
     if (__DEV__) {
       l.debug(
         'Skipping this round of syncing due to same nonce from before',
         '\n', 'nonce', battleNonce,
+        '\n', 'stepQueueLength', stepQueueLength,
         '\n', 'battle', battleId, battle,
         '\n', 'state', battleState,
         '\n', '(you\'ll only see this message in __DEV__)',
@@ -748,8 +756,8 @@ export const syncBattle = createAsyncThunk<CalcdexBattleState, SyncBattlePayload
           || (!!m?.ident && syncedPokemon.ident === m.ident)
       )).map(({
         // we're removing calcdexId & ident since we know they're for this Pokemon at this point
-        calcdexId, // removed
-        ident, // removed
+        calcdexId: _calcdexId, // removed
+        ident: _ident, // removed
         ...mutations
       }) => ({ ...mutations }));
 
@@ -1397,11 +1405,22 @@ export const syncBattle = createAsyncThunk<CalcdexBattleState, SyncBattlePayload
     });
   });
 
+  // only (re)run the (expensive) Hackmons inference when the battle log actually grew since the last
+  // sync; otherwise carry forward the previously inferred map (already deep-cloned via cloneBattleState())
+  // note: battleState.battleStepQueueLength still holds the *previous* synced length at this point
+  if (!formatId(battleState.format).includes('hackmons')) {
+    battleState.hackmonsInference = null;
+  } else if (stepQueueLength > (battleState.battleStepQueueLength || 0) || !battleState.hackmonsInference) {
+    battleState.hackmonsInference = syncHackmonsInference(battleState, battle.stepQueue || []);
+  }
+
   // this is important, otherwise we can't ignore re-renders of the same battle state
   // (which may result in reaching React's maximum update depth)
   if (battleNonce) {
     battleState.battleNonce = battleNonce;
   }
+
+  battleState.battleStepQueueLength = stepQueueLength;
 
   endTimer(
     '(dispatched)',
