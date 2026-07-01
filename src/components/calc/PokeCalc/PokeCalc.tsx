@@ -1,6 +1,7 @@
 import * as React from 'react';
 import cx from 'classnames';
 import { useCalcdexContext } from '../CalcdexContext';
+import { HackmonsSpreadEstimate } from '../HackmonsSpreadEstimate';
 import { PokeInfo } from '../PokeInfo';
 import { PokeMoves } from '../PokeMoves';
 import { PokeStats } from '../PokeStats';
@@ -42,6 +43,10 @@ export const PokeCalc = ({
         {/* IVs, EVs, calculated stats, boosts */}
         <PokeStats
           className={styles.stats}
+        />
+
+        <HackmonsSpreadEstimate
+          className={styles.estimate}
         />
       </div>
     </div>

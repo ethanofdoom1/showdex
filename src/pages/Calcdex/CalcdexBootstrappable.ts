@@ -302,11 +302,22 @@ export const MixinCalcdexBootstrappable = <
         return void this.endTimer('(bad state nonce)', this.battleState?.battleNonce);
       }
 
-      // dispatch a battle sync if the nonces are different (i.e., something changed)
-      if (this.battle.nonce === this.battleState.battleNonce) {
+      const stepQueueLength = this.battle.stepQueue?.length || 0;
+      const shouldRebuildHackmonsInference = formatId(this.battleState.format).includes('hackmons')
+        && stepQueueLength > 0
+        && !this.battleState.hackmonsInference;
+
+      // dispatch a battle sync if the nonces are different (i.e., something changed), the battle
+      // log grew, or derived Hackmons inference needs to be reconstructed after restored state.
+      if (
+        this.battle.nonce === this.battleState.battleNonce
+        && this.battleState.battleStepQueueLength === stepQueueLength
+        && !shouldRebuildHackmonsInference
+      ) {
         /* l.debug(
           'Ignoring battle sync due to same nonce for', this.battle.id,
           '\n', 'nonce', '(prev)', this.battleState.battleNonce, '(now)', this.battle.nonce,
+          '\n', 'stepQueueLength', stepQueueLength,
           '\n', 'battle', this.battle,
         ); */
 

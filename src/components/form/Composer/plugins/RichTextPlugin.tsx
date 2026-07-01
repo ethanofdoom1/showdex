@@ -25,30 +25,36 @@ export const RichTextPlugin = React.forwardRef<HTMLDivElement, RichTextPluginPro
   hint,
   onFocus,
   onBlur,
-}, forwardedRef): React.JSX.Element => (
-  <LexicalRichTextPlugin
-    contentEditable={(
-      <LexicalContentEditable
-        ref={forwardedRef}
-        className={inputClassName}
-        style={inputStyle}
-        {...(!!hint && {
-          'aria-placeholder': String(hint),
-          placeholder: (
-            <div
-              className={hintClassName}
-              style={hintStyle}
-            >
-              {hint}
-            </div>
-          ),
-        })}
-        onFocus={onFocus}
-        onBlur={onBlur}
-      />
-    )}
-    ErrorBoundary={LexicalErrorBoundary}
-  />
-));
+}, forwardedRef): React.JSX.Element => {
+  const ariaPlaceholder = typeof hint === 'string' || typeof hint === 'number'
+    ? `${hint}`
+    : undefined;
+
+  return (
+    <LexicalRichTextPlugin
+      contentEditable={(
+        <LexicalContentEditable
+          ref={forwardedRef}
+          className={inputClassName}
+          style={inputStyle}
+          {...(!!hint && {
+            'aria-placeholder': ariaPlaceholder,
+            placeholder: (
+              <div
+                className={hintClassName}
+                style={hintStyle}
+              >
+                {hint}
+              </div>
+            ),
+          })}
+          onFocus={onFocus}
+          onBlur={onBlur}
+        />
+      )}
+      ErrorBoundary={LexicalErrorBoundary}
+    />
+  );
+});
 
 RichTextPlugin.displayName = 'RichTextPlugin';

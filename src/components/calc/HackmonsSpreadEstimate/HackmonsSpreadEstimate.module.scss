@@ -1,0 +1,87 @@
+@use 'config/colors';
+@use 'functions/color';
+@use 'mixins/flex';
+@use 'mixins/font';
+@use 'mixins/spacing';
+
+.container {
+  @include spacing.margin($top: 10px);
+  @include spacing.padding($all: 8px);
+  border: 1px solid color.alpha(colors.$gray, 0.24);
+  border-radius: 6px;
+  font-size: 10px;
+}
+
+.header {
+  @include flex.row($justify: space-between, $align: center);
+  gap: 8px;
+}
+
+.title {
+  @include font.primary(600);
+  font-size: 11px;
+}
+
+.confidence {
+  @include font.primary(600);
+  text-transform: uppercase;
+
+  &.low {
+    color: colors.$orange;
+  }
+
+  &.medium {
+    color: colors.$blue;
+  }
+
+  &.high {
+    color: colors.$green;
+  }
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 6px;
+  @include spacing.margin($top: 5px);
+}
+
+.label {
+  opacity: 0.64;
+}
+
+.value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.speed {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 6px;
+  @include spacing.margin($top: 6px);
+}
+
+.speedNotes {
+  @include flex.column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.meta {
+  @include spacing.margin($top: 6px);
+  opacity: 0.72;
+}
+
+.actions {
+  @include flex.row($justify: flex-end, $align: center);
+  gap: 6px;
+  @include spacing.margin($top: 8px);
+}
+
+.actionButton {
+  @include spacing.padding-xy($x: 8px, $y: 3px);
+  border: 1px solid color.alpha(colors.$gray, 0.28);
+  border-radius: 4px;
+}

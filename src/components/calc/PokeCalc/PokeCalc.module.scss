@@ -20,9 +20,19 @@
       @include spacing.margin($top: 0);
       @include spacing.padding($all: 12px, $right: 0);
     }
+
+    .estimate {
+      flex: 1;
+      align-self: stretch;
+      @include spacing.margin($top: 0, $left: 12px);
+    }
   }
 }
 
 .stats {
+  @include spacing.margin($top: 12px);
+}
+
+.estimate {
   @include spacing.margin($top: 12px);
 }
