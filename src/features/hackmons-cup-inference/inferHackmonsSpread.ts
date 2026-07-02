@@ -1,4 +1,5 @@
 import {
+  type AbilityName,
   type ShowdexCalcMods,
   calculate,
 } from '@smogon/calc';
@@ -19,6 +20,7 @@ import { formatId } from '@showdex/utils/core';
 import { getGenDexForFormat } from '@showdex/utils/dex';
 import {
   type HackmonsDamageMatch,
+  type HackmonsDamageOutlier,
   type HackmonsInferenceFieldSnapshot,
   type HackmonsInferenceEvent,
   type HackmonsInferenceMap,
@@ -34,7 +36,7 @@ const CoordinateCandidateEvs = [0, 32, 64, 96, DefaultEv, 160, 192, 224, 252];
 const MaxScoredEventsPerCategory = 3;
 const MaxCandidateCount = 4000;
 const NeutralNature = 'Serious' as Showdown.PokemonNature;
-const CacheVersion = 'bounded-search-v10';
+const CacheVersion = 'bounded-search-v17';
 
 // keyed per defending Pokemon `calcdexId` + that mon's event signature, so a new battle log step
 // only re-searches the mon(s) whose events actually changed (see inferHackmonsSpread())
@@ -301,17 +303,35 @@ const applyEventPokemonSnapshot = (
   };
 };
 
+// Illuminate has no onModify*/onDamage*/onBasePower* hooks anywhere in the (patched) @smogon/calc
+// mechanics files -- it's a safe "no ability" sentinel for the search-candidate mon specifically
+const NeutralAbility = 'Illuminate' as AbilityName;
+
 const applyInferencePokemonAssumptions = (
   pokemon: CalcdexPokemon,
+  neutralizeUnconfirmedAbility?: boolean,
 ): CalcdexPokemon => ({
   ...pokemon,
 
   // Hackmons Cup item/ability are random. Until this feature explicitly infers them, do not let
-  // preset-suggested overrides bias spread inference damage rolls.
+  // preset-suggested overrides bias spread inference damage rolls. A preset-suggested `ability` (as
+  // opposed to a confirmed reveal from a `|-ability|` log line) is just as much of an unearned bias as
+  // a `dirtyAbility` override, so the search-candidate mon's ability is neutralized until confirmed.
   dirtyAbility: null,
   dirtyItem: null,
   abilityToggled: pokemon.ability ? pokemon.abilityToggled : false,
   dirtyBoostedStat: null,
+
+  // the event's own stat stages (e.g. a self-inflicted Def/SpDef drop from Armor Cannon) are set
+  // explicitly via `boosts: event.(attacker|defender)Boosts` in evaluateCandidateEvent(), but
+  // createSmogonPokemon() reads `dirtyBoosts` in PREFERENCE to `boosts` -- and dirtyBoosts is set by
+  // manual Calcdex boost edits (PokeStats arrows), which persist on the live mon across syncs. Left
+  // uncleared, a user's current boost override silently replaces the HISTORICAL stages on every past
+  // event's calc, skewing modeled ranges (e.g. falsely tripping the too-high outlier tagger on a hit
+  // that landed under a real self-inflicted drop). All four drop-timing/geometry combinations verify
+  // clean in e2e (which can't click the UI), so this is the only remaining override channel.
+  dirtyBoosts: null,
+  ...(neutralizeUnconfirmedAbility ? { ability: NeutralAbility } : null),
 });
 
 function resolveEventRelation(
@@ -476,24 +496,29 @@ const evaluateCandidateEvent = (
         state.format,
         candidatePokemon,
         event.attackerSnapshot,
-      )),
+      ), !event.attackerSnapshot?.abilityConfirmed),
       nature,
       ivs,
       evs,
       boosts: cloneBoostSnapshot(event.attackerBoosts),
       status: event.attackerStatus ?? candidatePokemon.status,
       spreadStats: candidateSpreadStats,
+      // Rage Fist's base power depends on how many times the attacker has been hit prior to this
+      // move; the live/candidate hitCounter reflects the current battle state, not this historical
+      // event, so it must come from the event itself
+      hitCounter: event.attackerHitCounter || 0,
     } : applyInferencePokemonAssumptions(applyEventPokemonSnapshot(state.format, {
       ...attackerMatch.pokemon,
       boosts: cloneBoostSnapshot(event.attackerBoosts),
       status: event.attackerStatus ?? attackerMatch.pokemon.status,
+      hitCounter: event.attackerHitCounter || 0,
     }, event.attackerSnapshot));
     const defenderCandidate: CalcdexPokemon = relation === 'defender' ? {
       ...applyInferencePokemonAssumptions(applyEventPokemonSnapshot(
         state.format,
         candidatePokemon,
         event.defenderSnapshot,
-      )),
+      ), !event.defenderSnapshot?.abilityConfirmed),
       nature,
       ivs,
       evs,
@@ -599,6 +624,12 @@ const evaluateCandidateEvent = (
   }
 
   const median = medianDamageRoll(rolls);
+  const maxRoll = Math.max(...rolls);
+
+  // a KO hit's observed damage is truncated at the defender's remaining HP -- the real roll was AT
+  // LEAST the observation -- so score it one-sided (any candidate whose max roll covers the observed
+  // HP loss fits perfectly) instead of dragging the search toward matching the truncated value exactly
+  const ko = event.endHp === 0;
 
   return {
     eventId: event.id,
@@ -606,14 +637,17 @@ const evaluateCandidateEvent = (
     moveName: event.moveName,
     observedDamage: normalizedObservedDamage,
     medianDamage: median,
-    distance: Math.abs(median - normalizedObservedDamage),
+    distance: ko
+      ? Math.max(0, normalizedObservedDamage - maxRoll)
+      : Math.abs(median - normalizedObservedDamage),
     maxHp: event.maxHp,
     crit: !!event.crit,
+    ko,
     attackerBoosts: cloneBoostSnapshot(event.attackerBoosts),
     defenderBoosts: cloneBoostSnapshot(event.defenderBoosts),
     attackerStatus: event.attackerStatus || '',
     defenderStatus: event.defenderStatus || '',
-    rollRange: [Math.min(...rolls), Math.max(...rolls)],
+    rollRange: [Math.min(...rolls), maxRoll],
   };
 };
 
@@ -707,11 +741,15 @@ const evaluateCandidateSpeedEvent = (
     ? applySpeedModifiers(otherRawSpe, event.defenderBoosts, event.defenderStatus)
     : applySpeedModifiers(otherRawSpe, event.attackerBoosts, event.attackerStatus);
 
+  // Showdown breaks exact speed ties by coin flip, so moving first only requires >= (not strictly >)
+  // the other mon's speed -- and moving second only requires <=. Treating equality as a violation
+  // (the previous +1/-1) fabricates a contradiction whenever a mon is observed on both sides of a
+  // true tie, which pushes the search away from the correct Spe instead of settling on it.
   if (relation === 'attacker') {
-    return Math.max(0, otherSpeed + 1 - candidateSpeed);
+    return Math.max(0, otherSpeed - candidateSpeed);
   }
 
-  return Math.max(0, candidateSpeed - (otherSpeed - 1));
+  return Math.max(0, candidateSpeed - otherSpeed);
 };
 
 const scoreCandidate = (
@@ -746,13 +784,35 @@ const isInRangeMatch = (
 ): boolean => (
   !match?.error
     && !!match?.rollRange
-    && match.observedDamage >= match.rollRange[0]
+    // a KO's observed damage is overkill-truncated at the defender's remaining HP, so any roll range
+    // whose max covers the observation is a perfect fit -- only the upper bound applies
+    && (match.ko || match.observedDamage >= match.rollRange[0])
     && match.observedDamage <= match.rollRange[1]
 );
 
-const hasInRangeMatch = (
-  matches: HackmonsDamageMatch[],
-): boolean => matches.some(isInRangeMatch);
+// tags a non-error match that missed the modeled roll range with *why*: observed damage above the
+// modeled max points at an uninferred damage-boosting factor, below the modeled min at a
+// damage-reducing one. This never blocks publishing the rest of the estimate -- it's groundwork for a
+// later curated item/ability modifier search (deferred), not a search feature itself yet
+const outlierDirection = (
+  match: HackmonsDamageMatch,
+): HackmonsDamageOutlier | null => {
+  if (match?.error || !match?.rollRange) {
+    return null;
+  }
+
+  if (match.observedDamage > match.rollRange[1]) {
+    return 'too-high';
+  }
+
+  // a KO's observed damage is truncated at the defender's remaining HP, so landing under the modeled
+  // min is expected (overkill), not evidence of a damage-reducing modifier
+  if (!match.ko && match.observedDamage < match.rollRange[0]) {
+    return 'too-low';
+  }
+
+  return null;
+};
 
 const eventSnapshotSignature = (
   event: HackmonsInferenceEvent,
@@ -1011,6 +1071,13 @@ const searchBestCandidates = (
   return [...seen.values()].sort((a, b) => b.score - a.score);
 };
 
+interface SpeedObservation {
+  relation: 'attacker' | 'defender';
+  otherName: string;
+  bound: number | null;
+  label: string;
+}
+
 // turns the candidate mon's speed-order events into human-readable bounds, e.g. "Outsped Vaporeon
 // (Spe >= 167)". A numeric bound is only shown when the *other* mon is the viewing player's own
 // Pokemon (so its Spe is actually known); same-priority is required or the order isn't speed-based
@@ -1019,8 +1086,7 @@ const describeSpeedBound = (
   candidatePokemon: CalcdexPokemon,
   speedEvents: HackmonsInferenceEvent[],
 ): string[] => {
-  const notes: string[] = [];
-  const seen = new Set<string>();
+  const observations: SpeedObservation[] = [];
 
   speedEvents.forEach((event) => {
     const fasterMove = getMoveData(state, event);
@@ -1054,15 +1120,48 @@ const describeSpeedBound = (
     const speedLabel = hasSpeedModifier(otherBoosts, otherStatus) || hasSpeedModifier(candidateBoosts, candidateStatus)
       ? 'modified Spe'
       : 'Spe';
-    const bound = otherModifiedSpe
-      ? relation === 'attacker'
-        ? ` (${speedLabel} ≥ ${otherModifiedSpe + 1})`
-        : ` (${speedLabel} ≤ ${otherModifiedSpe - 1})`
-      : '';
-    const note = `${relation === 'attacker' ? 'Outsped' : 'Outsped by'} ${otherName || 'opponent'}${bound}`;
 
-    if (!seen.has(note)) {
-      seen.add(note);
+    observations.push({
+      relation,
+      otherName: otherName || 'opponent',
+      bound: otherModifiedSpe,
+      label: speedLabel,
+    });
+  });
+
+  if (!observations.length) {
+    return [];
+  }
+
+  // every numeric observation constrains the SAME candidate's Spe, so collapse each direction down
+  // to its single tightest bound instead of emitting one (often redundant, sometimes duplicate-looking
+  // but differently-worded) note per event -- e.g. multiple "outsped Vaporeon" events at different
+  // boost states should surface only the highest resulting lower bound, not all of them
+  const lowerBounds = observations.filter((o) => o.relation === 'attacker' && o.bound != null);
+  const upperBounds = observations.filter((o) => o.relation === 'defender' && o.bound != null);
+  const nonNumeric = observations.filter((o) => o.bound == null);
+
+  const notes: string[] = [];
+
+  if (lowerBounds.length) {
+    const tightest = lowerBounds.reduce((best, o) => (o.bound > best.bound ? o : best));
+
+    notes.push(`Outsped ${tightest.otherName} (${tightest.label} ≥ ${tightest.bound})`);
+  }
+
+  if (upperBounds.length) {
+    const tightest = upperBounds.reduce((best, o) => (o.bound < best.bound ? o : best));
+
+    notes.push(`Outsped by ${tightest.otherName} (${tightest.label} ≤ ${tightest.bound})`);
+  }
+
+  const seenNonNumeric = new Set<string>();
+
+  nonNumeric.forEach((o) => {
+    const note = `${o.relation === 'attacker' ? 'Outsped' : 'Outsped by'} ${o.otherName}`;
+
+    if (!seenNonNumeric.has(note)) {
+      seenNonNumeric.add(note);
       notes.push(note);
     }
   });
@@ -1075,11 +1174,25 @@ export const inferHackmonsSpread = (
   events: HackmonsInferenceEvent[],
   ignoredEventCount: number,
 ): HackmonsInferenceMap => {
-  if (!formatId(state?.format).includes('hackmons') || !events.length) {
+  if (!formatId(state?.format).includes('hackmons')) {
     return {};
   }
 
-  const grouped = events.reduce((output, event) => {
+  // seed every currently-revealed opponent Pokemon with a blank (zero-event) entry, independent of
+  // whether it has any events yet -- this is what lets the Estimated Spread UI show an immediate
+  // neutral-prior baseline (default IV/EV/nature, no assumptions) at the start of a battle or right
+  // after a reload, instead of nothing at all. Presets Calcdex suggests elsewhere are usually
+  // meaningless for Hackmons Cup's random sets, so an explicit "nothing observed yet" from this
+  // feature is more honest than leaving that slot blank.
+  const grouped = (state[state.opponentKey]?.pokemon || [])
+    .filter((pokemon) => !!pokemon?.speciesForme && !!pokemon?.calcdexId)
+    .reduce((output, pokemon) => {
+      output[pokemon.calcdexId] = [];
+
+      return output;
+    }, {} as Record<string, HackmonsInferenceEvent[]>);
+
+  events.forEach((event) => {
     const attackerMatch = findPokemonByLogName(state, event.attackerName, event.attackerKey, event.attackerId);
     const defenderMatch = findPokemonByLogName(state, event.defenderName, event.defenderKey, event.defenderId);
     const related = [attackerMatch, defenderMatch]
@@ -1087,11 +1200,9 @@ export const inferHackmonsSpread = (
 
     related.forEach((match) => {
       const id = match.pokemon.calcdexId;
-      output[id] = [...(output[id] || []), event];
+      grouped[id] = [...(grouped[id] || []), event];
     });
-
-    return output;
-  }, {} as Record<string, HackmonsInferenceEvent[]>);
+  });
 
   const inference = Object.entries(grouped).reduce((output, [calcdexId, candidateEvents]) => {
     const candidateMatch = ['p1', 'p2', 'p3', 'p4'].flatMap((key: CalcdexPlayerKey) => state[key]?.pokemon || [])
@@ -1106,7 +1217,46 @@ export const inferHackmonsSpread = (
     const signature = candidateEvents
       .map((event) => `${event.id}:${event.damage || ''}:${event.maxHp || ''}:${eventSnapshotSignature(event)}`)
       .join(';');
-    const monCacheKey = [state.battleId, state.format, CacheVersion, calcdexId, signature].join('|');
+
+    // the key must ALSO capture the calc-relevant identity of every mon the events resolve to: right
+    // after a reload, a historical attacker/defender can resolve to a client-sourced roster entry
+    // that's missing its server-known item/ability (neither appears in the replayed log without an
+    // explicit reveal line), so the evaluation SUCCEEDS but models a plain neutral attacker (e.g. a
+    // Choice Band + Huge Power Waterfall at ~1/3 of its real damage). Keyed on events alone, that
+    // poisoned result would be pinned forever once cached -- the events never change just because
+    // `myPokemon` finishes repopulating a tick later. Folding each participant's ability/item/source
+    // in makes the key change when the roster data completes, so the next sync re-searches with it
+    const participantTriples: Record<string, { logName: string; playerKey: CalcdexPlayerKey; logId: string; }> = {};
+
+    candidateEvents.forEach((event) => {
+      participantTriples[`${event.attackerKey || ''}:${event.attackerId || ''}:${event.attackerName || ''}`] = {
+        logName: event.attackerName,
+        playerKey: event.attackerKey,
+        logId: event.attackerId,
+      };
+      participantTriples[`${event.defenderKey || ''}:${event.defenderId || ''}:${event.defenderName || ''}`] = {
+        logName: event.defenderName,
+        playerKey: event.defenderKey,
+        logId: event.defenderId,
+      };
+    });
+
+    const participantSignature = Object.values(participantTriples)
+      .map(({ logName, playerKey, logId }) => {
+        const participant = findPokemonByLogName(state, logName, playerKey, logId)?.pokemon;
+
+        return participant
+          ? [
+            participant.calcdexId,
+            formatId(participant.dirtyAbility || participant.ability),
+            formatId(participant.dirtyItem || participant.item),
+            participant.source || '',
+          ].join('~')
+          : 'unresolved';
+      })
+      .join(';');
+
+    const monCacheKey = [state.battleId, state.format, CacheVersion, calcdexId, signature, participantSignature].join('|');
     const cachedState = InferenceCache.get(monCacheKey);
 
     if (cachedState) {
@@ -1123,18 +1273,35 @@ export const inferHackmonsSpread = (
     const candidates = searchBestCandidates(state, candidateEvents, candidateMatch, rollCache);
 
     const [best] = candidates;
-    const matches = best ? candidateEvents.filter((event) => event.eventType !== 'speed').map((event) => evaluateCandidateEvent(
-        state,
-        event,
-        candidateMatch,
-        best.nature,
-        best.ivs,
-        best.evs,
-        rollCache,
-      )) : [];
-    const shouldPublishEstimate = best
-      && Number.isFinite(best.score)
-      && hasInRangeMatch(matches);
+    const matches = best ? candidateEvents.filter((event) => event.eventType !== 'speed').map((event) => {
+        const match = evaluateCandidateEvent(state, event, candidateMatch, best.nature, best.ivs, best.evs, rollCache);
+
+        return { ...match, outlier: outlierDirection(match) };
+      }) : [];
+    const scoredMatches = matches.filter((match) => !match?.error);
+    const inRangeMatches = matches.filter(isInRangeMatch);
+    const outlierMatches = matches.filter((match) => !!match?.outlier);
+
+    // a lookup failure (attacker/defender/relation) almost always means the OTHER Pokemon involved in
+    // that historical event couldn't be found in state[playerKey].pokemon -- most commonly, the auth
+    // player's own roster (`myPokemon`) is transiently incomplete right after a page reload, before
+    // Showdown's client has repopulated it from the next `|request|` message (this arrives separately
+    // from -- and later than -- the stepQueue replay that reconstructs the visible battle log). A mon
+    // that has since fainted or switched out can be genuinely missing from the roster for that brief
+    // window, even though it's present again a tick or two later. This is NOT the same as a real
+    // modeling gap (missing dex data, invalid move, etc.), so it shouldn't be cached below
+    const hasLookupFailure = matches.some((match) => (
+      /^(?:attacker|defender) lookup failed|^candidate relation failed/.test(match?.error || '')
+    ));
+
+    // always publish -- `best` is unconditionally seeded by searchBestCandidates() even with zero
+    // events (the plain neutral-nature/default-IV-EV baseline), so this is really just a defensive
+    // guard against a malformed score, not a gate on "do we have enough evidence". A mon with zero
+    // events publishes that neutral baseline as an honest "nothing observed yet" prior instead of
+    // showing nothing; an event that lands outside the modeled range (e.g. an unmodeled move like
+    // Rollout, or a boosted/reduced hit) is tagged via `outlier` above rather than withholding the
+    // rest of an otherwise-good fit
+    const shouldPublishEstimate = best && Number.isFinite(best.score);
 
     const publishedEvents = candidateEvents.filter((event) => event.eventType !== 'speed');
     const speedNotes = describeSpeedBound(
@@ -1142,13 +1309,11 @@ export const inferHackmonsSpread = (
       candidateMatch,
       candidateEvents.filter((event) => event.eventType === 'speed'),
     );
-    const scoredMatches = matches.filter((match) => !match?.error);
-    const inRangeMatches = matches.filter(isInRangeMatch);
 
     const monInference: HackmonsInferenceState = {
       events: publishedEvents,
       ignoredEventCount,
-      updatedTurn: Math.max(...candidateEvents.map((event) => event.turn)),
+      updatedTurn: candidateEvents.length ? Math.max(...candidateEvents.map((event) => event.turn)) : 0,
       speedNotes,
       assumptions: {
         nature: best?.nature || NeutralNature,
@@ -1159,7 +1324,14 @@ export const inferHackmonsSpread = (
           'Only direct move damage is modeled.',
           'Speed is inferred as a bound from turn order, not an exact value.',
           'Unknown volatile effects may lower confidence.',
-          ...(!shouldPublishEstimate ? ['No modeled damage roll matched the observed event range yet.'] : []),
+          ...(!candidateEvents.length ? [
+            'No battle events observed yet for this Pokemon -- showing the default neutral spread.',
+          ] : []),
+          ...(outlierMatches.length ? [
+            `${outlierMatches.length} damage event${outlierMatches.length === 1 ? '' : 's'} fell outside `
+              + 'the modeled range (see per-event outlier tags) -- possibly a boosted/reduced hit or an '
+              + 'unmodeled move mechanic, not yet inferred.',
+          ] : []),
         ],
       },
       estimate: shouldPublishEstimate ? {
@@ -1175,10 +1347,16 @@ export const inferHackmonsSpread = (
     };
 
     output[calcdexId] = monInference;
-    InferenceCache.set(monCacheKey, monInference);
 
-    if (InferenceCache.size > 64) {
-      InferenceCache.delete(InferenceCache.keys().next().value);
+    // skip caching a result tainted by a transient lookup failure -- otherwise the event signature
+    // that gates the cache key never changes just because a DIFFERENT player's roster later became
+    // complete, and the stale error would be pinned forever instead of self-healing on the next tick
+    if (!hasLookupFailure) {
+      InferenceCache.set(monCacheKey, monInference);
+
+      if (InferenceCache.size > 64) {
+        InferenceCache.delete(InferenceCache.keys().next().value);
+      }
     }
 
     return output;

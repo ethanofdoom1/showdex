@@ -9,8 +9,11 @@ const showdownOrigins = [
   'https://localhost.psim.us',
 ];
 const scenarioName = process.env.SCENARIO || 'mixed';
-const formatId = scenarioName === 'temporary' ? 'gen9purehackmons' : 'gen9balancedhackmons';
-const formatLabel = scenarioName === 'temporary' ? 'Pure Hackmons' : 'Balanced Hackmons';
+// all scenarios run in Pure Hackmons: Balanced Hackmons' banlist silently rejects otherwise-legal
+// moves (Storm Throw, Rage Fist, ...) and the harness only sees this as a "battle room never
+// appeared" timeout with no clear error, which is easy to mistake for a connection flake
+const formatId = 'gen9purehackmons';
+const formatLabel = 'Pure Hackmons';
 const runId = `${process.pid}-${Date.now()}`;
 const nameSuffix = Date.now().toString(36).slice(-6);
 const playerNames = [`sdxa${nameSuffix}`, `sdxb${nameSuffix}`];
@@ -27,24 +30,64 @@ const speciesBaseStats = {
   Vaporeon: { hp: 130, atk: 65, def: 60, spa: 110, spd: 95, spe: 65 },
 };
 
-const teamA = (evs, nature, moves, { item = 'Leftovers', ability = 'Pressure' } = {}) => `=== [${formatId}] Showdex Custom A ===
+const teamA = (evs, nature, moves, { item = 'Leftovers', ability = 'Pressure', ivs } = {}) => `=== [${formatId}] Showdex Custom A ===
 
 Vaporeon @ ${item}
 Ability: ${ability}
 Level: 100
 EVs: ${evs}
 ${nature} Nature
-${moves.map((move) => `- ${move}`).join('\n')}
+${ivs ? `IVs: ${ivs}\n` : ''}${moves.map((move) => `- ${move}`).join('\n')}
 `;
 
-const teamB = (evs, nature, moves, { item = 'Leftovers', ability = 'Pressure' } = {}) => `=== [${formatId}] Showdex Custom B ===
+const teamB = (evs, nature, moves, { item = 'Leftovers', ability = 'Pressure', ivs } = {}) => `=== [${formatId}] Showdex Custom B ===
 
 Mew @ ${item}
 Ability: ${ability}
 Level: 100
 EVs: ${evs}
 ${nature} Nature
-${moves.map((move) => `- ${move}`).join('\n')}
+${ivs ? `IVs: ${ivs}\n` : ''}${moves.map((move) => `- ${move}`).join('\n')}
+`;
+
+// team A with a second Pokemon (a "backup") behind Vaporeon -- needed for scenarios where the
+// viewer's own mon has to faint or switch out (e.g. testing reload behavior against a mon that's no
+// longer active). `vaporeon`/`backup` each take { evs, nature, moves, item, ability }
+const teamAWithBackup = (vaporeon, backup) => `=== [${formatId}] Showdex Custom A ===
+
+Vaporeon @ ${vaporeon.item || 'Leftovers'}
+Ability: ${vaporeon.ability || 'Pressure'}
+Level: 100
+EVs: ${vaporeon.evs}
+${vaporeon.nature} Nature
+${vaporeon.moves.map((move) => `- ${move}`).join('\n')}
+
+${backup.species} @ ${backup.item || 'Leftovers'}
+Ability: ${backup.ability || 'Pressure'}
+Level: 100
+EVs: ${backup.evs}
+${backup.nature} Nature
+${backup.moves.map((move) => `- ${move}`).join('\n')}
+`;
+
+// opponent (inferred) side with a backup behind Mew -- needed for scenarios where Mew has to faint
+// but the battle must keep going (so the room isn't torn down before we can snapshot). `mew`/`backup`
+// each take { evs, nature, moves, item, ability }; `backup` also takes { species }
+const teamBWithBackup = (mew, backup) => `=== [${formatId}] Showdex Custom B ===
+
+Mew @ ${mew.item || 'Leftovers'}
+Ability: ${mew.ability || 'Pressure'}
+Level: 100
+EVs: ${mew.evs}
+${mew.nature} Nature
+${mew.moves.map((move) => `- ${move}`).join('\n')}
+
+${backup.species} @ ${backup.item || 'Leftovers'}
+Ability: ${backup.ability || 'Pressure'}
+Level: 100
+EVs: ${backup.evs}
+${backup.nature} Nature
+${backup.moves.map((move) => `- ${move}`).join('\n')}
 `;
 
 // each scenario exercises a different inference path; pick one with SCENARIO=<name> (default: mixed)
@@ -148,6 +191,209 @@ const scenarios = {
       { a: 'Weather Ball', b: 'Recover' },
       { a: 'Rain Dance', b: 'Recover' },
     ],
+  },
+
+  // exact speed tie -> Vaporeon (72 Spe EV, neutral-Spe nature) and Mew (0 Spe IV/EV, Quiet) are
+  // engineered to both land on Spe 184, so every equal-priority turn is a genuine 50/50 coin flip on
+  // who moves first. This exercises two bugs: (1) evaluateCandidateSpeedEvent/describeSpeedBound used
+  // to treat equality as a bound violation (excluding the legal tie), which -- once both directions are
+  // observed across enough turns -- forced a contradiction that pushed the search away from the correct
+  // Spe; (2) describeSpeedBound used to emit one note per event instead of collapsing repeated
+  // observations down to the single tightest bound. Every turn (including Recover/Recover) produces a
+  // same-priority speed-order event, so 12 turns give ~12 independent coin flips -- overwhelmingly
+  // likely (>99.9%) to land on both directions and so exercise the tie contradiction.
+  speedtie: {
+    teams: {
+      a: teamA('252 HP / 72 Spe / 186 SpA', 'Modest', ['Psychic', 'Recover']),
+      b: teamB('252 HP / 252 SpA / 4 Def', 'Quiet', ['Shadow Ball', 'Recover'], { ivs: '0 Spe' }),
+    },
+    plannedTurns: [
+      { a: 'Psychic', b: 'Shadow Ball' },
+      { a: 'Psychic', b: 'Shadow Ball' },
+      { a: 'Recover', b: 'Recover' },
+      { a: 'Psychic', b: 'Shadow Ball' },
+      { a: 'Psychic', b: 'Shadow Ball' },
+      { a: 'Recover', b: 'Recover' },
+      { a: 'Psychic', b: 'Shadow Ball' },
+      { a: 'Psychic', b: 'Shadow Ball' },
+      { a: 'Recover', b: 'Recover' },
+      { a: 'Psychic', b: 'Shadow Ball' },
+      { a: 'Psychic', b: 'Shadow Ball' },
+      { a: 'Recover', b: 'Recover' },
+    ],
+  },
+
+  // Rage Fist -> its base power scales with how many times the USER has been hit by a damaging move
+  // this battle (50 * (1 + hitCounter)). Vaporeon chips Mew with Waterfall across several turns while
+  // Mew Recovers, so Mew's hit counter climbs to 3, 4, then 5 by the time it fires three separate Rage
+  // Fists -- giving three distinct, escalating BP values (200/250/300) to verify the scaling landed on
+  // the right historical count, not the live/zero value.
+  ragefist: {
+    teams: {
+      a: teamA('252 HP / 252 Atk', 'Adamant', ['Waterfall', 'Recover']),
+      b: teamB('252 HP / 252 Atk / 4 Def', 'Adamant', ['Rage Fist', 'Recover']),
+    },
+    plannedTurns: [
+      { a: 'Waterfall', b: 'Recover' },
+      { a: 'Waterfall', b: 'Recover' },
+      { a: 'Waterfall', b: 'Recover' },
+      { a: 'Recover', b: 'Rage Fist' },
+      { a: 'Waterfall', b: 'Recover' },
+      { a: 'Recover', b: 'Rage Fist' },
+      { a: 'Waterfall', b: 'Recover' },
+      { a: 'Recover', b: 'Rage Fist' },
+    ],
+  },
+
+  // Rollout -> @smogon/calc treats it as a flat 30 BP move (no consecutive-use doubling, no Defense
+  // Curl synergy), so every hit after the Defense Curl setup is a guaranteed "too-high" outlier that
+  // will never land in the modeled roll range. Vaporeon only Recovers (deals no damage back), so
+  // Mew's ENTIRE damage evidence is unmatchable Rollout hits -- this is the exact shape of the bug
+  // report: before the graceful-degradation fix, zero in-range matches meant the whole "Estimated
+  // Spread" UI vanished instead of publishing a low-confidence estimate with outlier tags.
+  rollout: {
+    teams: {
+      a: teamA('252 HP / 252 Def', 'Bold', ['Recover']),
+      b: teamB('252 HP / 252 Atk / 4 Def', 'Adamant', ['Defense Curl', 'Rollout']),
+    },
+    plannedTurns: [
+      { a: 'Recover', b: 'Defense Curl' },
+      { a: 'Recover', b: 'Rollout' },
+      { a: 'Recover', b: 'Rollout' },
+      { a: 'Recover', b: 'Rollout' },
+      { a: 'Recover', b: 'Rollout' },
+    ],
+  },
+
+  // Upper Hand -> only deals damage if the target is ALSO using a priority move this turn (otherwise
+  // it fails outright); Vaporeon's Quick Attack supplies that condition every attacking turn. This is
+  // a plain fixed-BP Dark move with no known @smogon/calc modeling gap, so this scenario exists to
+  // confirm-or-refute the "Upper Hand" half of the bug report (hypothesized to be a red herring
+  // riding along with the real Rollout bug, not a separate modeling issue).
+  upperhand: {
+    teams: {
+      a: teamA('252 HP / 252 Atk', 'Adamant', ['Quick Attack', 'Recover']),
+      b: teamB('252 HP / 252 Atk / 4 Def', 'Adamant', ['Upper Hand', 'Recover']),
+    },
+    plannedTurns: [
+      { a: 'Quick Attack', b: 'Upper Hand' },
+      { a: 'Recover', b: 'Recover' },
+      { a: 'Quick Attack', b: 'Upper Hand' },
+      { a: 'Recover', b: 'Recover' },
+      { a: 'Quick Attack', b: 'Upper Hand' },
+    ],
+  },
+
+  // Huge Power -> a passive onModifyAtk-only ability with no `|-ability|` reveal line anywhere in its
+  // real implementation (unlike message-generating abilities like Intimidate/Drizzle), so it never
+  // gets confirmed for the rest of the battle. Vaporeon only Recovers (deals no damage back), so
+  // Mew's entire evidence is Body Slam hits at ~2x its true (neutral-ability) modeled max -- every
+  // hit should land as a "too-high" outlier rather than dragging the inferred Atk EV/IV down to
+  // (incorrectly) explain away a boost the search doesn't know about.
+  hugepower: {
+    teams: {
+      a: teamA('252 HP / 252 Def', 'Bold', ['Recover']),
+      b: teamB('252 HP / 252 Atk / 4 Def', 'Adamant', ['Body Slam', 'Recover'], { ability: 'Huge Power' }),
+    },
+    plannedTurns: [
+      { a: 'Recover', b: 'Body Slam' },
+      { a: 'Recover', b: 'Body Slam' },
+      { a: 'Recover', b: 'Body Slam' },
+      { a: 'Recover', b: 'Body Slam' },
+    ],
+  },
+
+  // SAME-TURN self-inflicted defense drop on the CANDIDATE defender -> matches the manually observed
+  // bug geometry (Snivy used Armor Cannon, then Hyperspace Hole hit it THAT SAME TURN -> falsely
+  // flagged `too-high`), with Snivy as the inferred opponent. The other three geometry cells were
+  // verified clean (cross-turn x either defender; same-turn x non-candidate defender), so this covers
+  // the last one: the CANDIDATE Mew (base 100 Spe, naturally faster than Vaporeon) uses Armor Cannon
+  // FIRST in the turn (dropping its own -1 Def/SpDef mid-turn), then Vaporeon's Hyperspace Hole (the
+  // exact move from the report) hits the freshly-dropped Mew before the turn ends. Turns alternate
+  // same-turn hits (T1 at -1, T3 at -2 -- the drops stack) with cross-turn control hits at the same
+  // stages (T2 at -1, T5 at -2): if only the same-turn events outlier/mismatch, the drop is being
+  // registered a turn late for the candidate's own search. Correctness: NO Hyperspace Hole event
+  // outlier-tagged, no damageMismatches, Mew's SpD delta small.
+  defdrop: {
+    teams: {
+      a: teamA('252 HP / 252 SpA', 'Modest', ['Hyperspace Hole', 'Recover']),
+      b: teamB('252 HP / 252 SpD', 'Calm', ['Armor Cannon', 'Recover']),
+    },
+    plannedTurns: [
+      { a: 'Hyperspace Hole', b: 'Armor Cannon' }, // SAME turn: Mew drops itself to -1, then gets hit at -1
+      { a: 'Hyperspace Hole', b: 'Recover' }, // cross-turn control: hit at -1
+      { a: 'Hyperspace Hole', b: 'Armor Cannon' }, // SAME turn: drop to -2, then hit at -2
+      { a: 'Recover', b: 'Recover' },
+      { a: 'Hyperspace Hole', b: 'Recover' }, // cross-turn control: hit at -2
+    ],
+  },
+
+  // reload mid-battle -> the VIEWER's own Vaporeon chips Mew with Waterfall, then VOLUNTARILY
+  // switches out to a Blissey backup; the page is then reloaded and rejoins the same battle room.
+  // This reproduces a real bug: right after reload, Showdown's `battle.myPokemon` (the source of the
+  // auth player's roster -- see syncBattle.ts) is transiently empty until the next `|request|`
+  // message arrives (a separate, later websocket message than the stepQueue replay that reconstructs
+  // the visible log), so a switched-out mon can briefly be missing from state[authPlayerKey].pokemon.
+  // Vaporeon's Waterfall hits against Mew are historical events whose ATTACKER (Vaporeon) lookup must
+  // still resolve after the reload for Mew's Def to be inferred -- if `InferenceCache` baked in a
+  // lookup failure from that transient window, it would never self-heal since the event signature
+  // doesn't change once the roster completes.
+  //
+  // A voluntary switch (not a faint) is used deliberately: faint timing depends on damage rolls and a
+  // bulky backup can stall the battle indefinitely, whereas a scripted switch is exact. Mew only ever
+  // Recovers, so it deals no damage back -- the battle can't stall out or KO Vaporeon early, and the
+  // only damage events are Vaporeon -> Mew (which is what we want to reconstruct across the reload).
+  reload: {
+    teams: {
+      a: teamAWithBackup(
+        { evs: '252 Atk', nature: 'Adamant', moves: ['Waterfall', 'Recover'] },
+        { species: 'Blissey', evs: '252 HP / 252 Def', nature: 'Bold', moves: ['Recover'] },
+      ),
+      b: teamB('252 HP / 252 Def / 4 SpD', 'Bold', ['Recover']),
+    },
+    plannedTurns: [
+      { a: 'Waterfall', b: 'Recover' },
+      { a: 'Waterfall', b: 'Recover' },
+      { a: 'Switch', b: 'Recover' }, // Vaporeon voluntarily switches to Blissey; reload fires after this
+    ],
+    reloadAfterTurn: 2,
+  },
+
+  // fainted-CANDIDATE lookup across a reload (Bug B) -> the inferred opponent Mew is KO'd BY DAMAGE
+  // (leaving the real `0 fnt` condition on its roster entry -- a self-faint like Memento never
+  // produces one), and then the VIEWER's page reloads while p2's replacement is still pending. The
+  // viewer instance is the one that reconstructs the battle from the log replay, so it's the instance
+  // that must re-identify the fainted Mew as the defender of both historical Waterfall events for its
+  // estimate to survive. Determinism: Choice Band + Huge Power Vaporeon's Waterfall rolls 276-324 vs
+  // Mew's 404 HP -- one hit can never KO (max 324 < 404) and two hits always do (min 552 > 404), so
+  // Mew faints on EXACTLY the second Waterfall regardless of rolls. Mew holds Air Balloon (inert vs
+  // Waterfall, no Leftovers healing to shift the math) and only Celebrates (never heals, deals no
+  // damage back). Earlier variants (opponent Memento self-faint; auth-side Memento faint) both passed,
+  // so this pins the remaining untested trigger: a damage-KO'd `0 fnt` candidate across a reload.
+  // Correctness: post-reload, Mew's two Waterfall events still resolve (backendMatchCount 2, not a
+  // reverted neutral prior).
+  faintreload: {
+    teams: {
+      a: teamAWithBackup(
+        {
+          evs: '252 HP / 252 Atk',
+          nature: 'Adamant',
+          moves: ['Waterfall', 'Recover'],
+          item: 'Choice Band',
+          ability: 'Huge Power',
+        },
+        { species: 'Blissey', evs: '252 HP / 252 Def', nature: 'Bold', moves: ['Recover'] },
+      ),
+      b: teamBWithBackup(
+        { evs: '252 HP / 252 SpD', nature: 'Calm', moves: ['Celebrate'], item: 'Air Balloon' },
+        { species: 'Chansey', evs: '252 HP / 252 Def', nature: 'Bold', moves: ['Recover'] },
+      ),
+    },
+    plannedTurns: [
+      { a: 'Waterfall', b: 'Celebrate' }, // Def evidence #1 (~70%, can never KO)
+      { a: 'Waterfall', b: 'Celebrate' }, // Mew is KO'd by damage -> `0 fnt`; reload fires while p2's replacement is pending
+    ],
+    reloadAfterTurn: 1,
   },
 };
 
@@ -432,25 +678,29 @@ const ensureConnected = async (page) => {
   }
 };
 
-const chooseName = async (page, username) => {
-  await page.goto(showdownUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-  await muteClient(page);
-  await ensureConnected(page);
-  await waitForClientReady(page);
-
+// claims/reclaims a guest identity on the current connection. The client's own "Choose name" popup
+// button (when visible) drives a real login-flow handshake that a raw `/trn name,0,` cannot replicate
+// -- on a *second* connection under the same persistent browser profile, the server rejects a bare
+// unauthenticated `/trn` for a name it's already seen claimed this session (`|nametaken|...|Your
+// authentication token was invalid.`), but going through the popup button succeeds because the client
+// handles whatever token/handshake the server actually wants. Always prefer the button path; `/trn` is
+// only a fallback for the (first-connection) case where no popup is shown at all
+const claimUsername = async (page, username) => {
   const currentUser = await getCurrentUsername(page);
 
-  if (currentUser !== username) {
-    const chooseNameButton = page.getByText('Choose name');
+  if (currentUser === username) {
+    return true;
+  }
 
-    if (await chooseNameButton.isVisible().catch(() => false)) {
-      await chooseNameButton.click();
-      await page.locator('.ps-popup input').waitFor({ timeout: 5000 });
-      await page.locator('.ps-popup input').fill(username);
-      await page.locator('.ps-popup').getByRole('button', { name: 'Choose name' }).click();
-    } else {
-      await page.evaluate((name) => window.app.send(`/trn ${name},0,`), username);
-    }
+  const chooseNameButton = page.getByText('Choose name');
+
+  if (await chooseNameButton.isVisible().catch(() => false)) {
+    await chooseNameButton.click();
+    await page.locator('.ps-popup input').waitFor({ timeout: 5000 });
+    await page.locator('.ps-popup input').fill(username);
+    await page.locator('.ps-popup').getByRole('button', { name: 'Choose name' }).click();
+  } else {
+    await page.evaluate((name) => window.app.send(`/trn ${name},0,`), username);
   }
 
   const waitForUsername = async (timeoutMs) => page.waitForFunction(
@@ -471,7 +721,7 @@ const chooseName = async (page, username) => {
 
   let registered = await waitForUsername(5000).then(() => true).catch(() => false);
 
-  if (!registered && currentUser !== username) {
+  if (!registered) {
     await page.evaluate((name) => window.app.send(`/trn ${name},0,`), username);
     await ensureConnected(page);
     registered = await waitForUsername(5000).then(() => true).catch(() => false);
@@ -483,6 +733,17 @@ const chooseName = async (page, username) => {
     await ensureConnected(page);
     registered = await waitForUsername(5000).then(() => true).catch(() => false);
   }
+
+  return registered;
+};
+
+const chooseName = async (page, username) => {
+  await page.goto(showdownUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+  await muteClient(page);
+  await ensureConnected(page);
+  await waitForClientReady(page);
+
+  const registered = await claimUsername(page, username);
 
   if (!registered) {
     throw new Error(`Name handshake failed for ${username}: ${JSON.stringify(await snapshotClient(page), null, 2)}`);
@@ -534,25 +795,6 @@ const seedCustomTeam = async (page, importText, teamName) => page.evaluate((payl
   teamName,
 });
 
-const getChallengeDialog = (page, opponentName) => (
-  page.getByText(`Challenge ${opponentName}?`).locator('xpath=ancestor::div[.//button[normalize-space(.)="Random Battle"]][1]')
-);
-
-const getFormatTeamScope = (page, opponentName) => (
-  opponentName ? getChallengeDialog(page, opponentName) : page.locator('body')
-);
-
-const clickPopupButton = async (page, label) => {
-  const popupButton = page.locator('.ps-popup').getByRole('button', { name: label });
-
-  if (await popupButton.isVisible().catch(() => false)) {
-    await popupButton.last().click({ force: true });
-    return true;
-  }
-
-  return false;
-};
-
 const safePageEvaluate = async (page, evaluator, ...args) => {
   if (page.isClosed()) {
     return null;
@@ -562,34 +804,6 @@ const safePageEvaluate = async (page, evaluator, ...args) => {
     return await page.evaluate(evaluator, ...args);
   } catch {
     return null;
-  }
-};
-
-const setFormatAndTeam = async (page, teamName, opponentName) => {
-  const scope = getFormatTeamScope(page, opponentName);
-  const formatButton = scope.getByRole('button', { name: 'Random Battle' });
-  if (await formatButton.isVisible().catch(() => false)) {
-    await formatButton.first().click({ force: true });
-    if (!(await clickPopupButton(page, formatLabel))) {
-      await page.getByRole('button', { name: formatLabel }).first().click({ force: true });
-    }
-  }
-
-  const teamButton = scope.getByRole('button', { name: 'Select a team' });
-  if (await teamButton.isVisible().catch(() => false)) {
-    await teamButton.first().click({ force: true });
-    if (!(await clickPopupButton(page, teamName))) {
-      await page.getByRole('button', { name: teamName }).first().click({ force: true });
-    }
-    return;
-  }
-
-  const randomTeamButton = scope.getByRole('button', { name: 'Random team' });
-  if (await randomTeamButton.isVisible().catch(() => false)) {
-    await randomTeamButton.first().click({ force: true });
-    if (!(await clickPopupButton(page, teamName))) {
-      await page.getByRole('button', { name: teamName }).first().click({ force: true });
-    }
   }
 };
 
@@ -653,15 +867,108 @@ const focusBattleRoom = async (page, battleId) => {
   await page.waitForTimeout(battleUiSettleMs);
 };
 
-const waitForBattleTurn = async (page, battleId, previousTurn) => page.waitForFunction(
-  ({ roomId, turn }) => {
-    const room = window.app?.rooms?.[roomId];
-
-    return typeof room?.battle?.turn === 'number' && room.battle.turn > turn;
-  },
-  { roomId: battleId, turn: previousTurn ?? -1 },
+// gates on the actual first move request rather than `battle.turn > 0` -- the turn counter can lag a
+// tick behind the request that unlocks it, and (unlike turn) this is exactly the state the "blank
+// neutral-prior" snapshot cares about: battle UI mounted, first real decision pending, zero events yet
+const waitForMoveRequest = async (page, battleId) => page.waitForFunction(
+  (roomId) => window.app?.rooms?.[roomId]?.request?.requestType === 'move',
+  battleId,
   { timeout: 30000 },
 );
+
+// `room.request` briefly goes missing during phase transitions (post-reload rejoin, right after a
+// switch/faint resolves) -- submitting a choice while it's absent crashes with requestType=undefined.
+// Callers should wait for it to be present before attempting to act on it
+const waitForRequestPresent = async (page, battleId, timeoutMs = 15000) => page.waitForFunction(
+  (roomId) => !!(window.app?.rooms?.[roomId]?.request),
+  battleId,
+  { timeout: timeoutMs },
+).catch(() => null);
+
+// team preview must be explicitly resolved by both sides before anything else can happen. Nothing
+// else in this script sends the team-preview choice outside of the main planned-turn loop, so this
+// must be called directly wherever team preview needs resolving before that loop has started --
+// otherwise any wait for turn/request progress deadlocks for its full timeout, since nobody ever
+// leaves team preview
+const submitTeamPreview = async (page, battleId) => page.evaluate((roomId) => {
+  const room = window.app?.rooms?.[roomId];
+  const requestType = room?.request?.requestType;
+
+  if (requestType === 'teampreview' || requestType === 'team') {
+    window.app.send('/choose team 1', roomId);
+  }
+}, battleId);
+
+// simulates a real browser refresh mid-battle: navigates directly to the room's URL (which
+// re-authenticates the same guest session from the persistent profile and rejoins the in-progress
+// battle), rather than assuming the client auto-restores the previously open room tab
+const reloadAndRejoinBattle = async (page, username, battleId) => {
+  // TEMPORARY diagnostic: capture raw websocket frames around the post-reload identity handshake so a
+  // failed /trn rename can be told apart from a slow one (does the server ever send |nametaken| or
+  // |updateuser|, or is nothing coming back at all?). Remove once the reload identity bug is resolved
+  const socketFrames = [];
+
+  page.on('websocket', (ws) => {
+    ws.on('framereceived', (frame) => socketFrames.push({ dir: 'recv', payload: String(frame.payload).slice(0, 300) }));
+    ws.on('framesent', (frame) => socketFrames.push({ dir: 'sent', payload: String(frame.payload).slice(0, 300) }));
+  });
+
+  await page.goto(`${showdownUrl}/${battleId}`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+  await muteClient(page);
+  await ensureConnected(page);
+  await waitForClientReady(page);
+
+  // guest identity (unregistered, no password) is NOT restored automatically by the client on a
+  // fresh connection the way a real login session would be -- re-assert it BEFORE anything else on
+  // this connection, since the room-join that follows needs to happen as the correct player, not as
+  // a fresh anonymous guest. Reuses the same button-first handshake as the initial `chooseName` login
+  // -- a raw `/trn name,0,` alone gets rejected by the server on this second connection
+  // (`|nametaken|...|Your authentication token was invalid.`), but the "Choose name" popup succeeds
+  const renamed = await claimUsername(page, username);
+
+  if (!renamed) {
+    console.log(`Reload identity handshake failed for ${username}; proceeding anyway (diagnostics below will show the stuck state).`);
+  }
+
+  // TEMPORARY diagnostic: print anything trn/rename/identity-related seen on the wire. Remove alongside
+  // the frame capture above once the reload identity bug is resolved
+  const identityFrames = socketFrames.filter((frame) => /trn|nametaken|updateuser|challstr/i.test(frame.payload));
+  console.log('Reload identity websocket frames:', JSON.stringify(identityFrames));
+
+  const diagnostics = await page.evaluate((roomId) => ({
+    url: window.location.href,
+    username: window.app?.user?.get?.('name') || window.app?.user?.attributes?.name || null,
+    rooms: Object.keys(window.app?.rooms || {}),
+    roomExists: !!window.app?.rooms?.[roomId],
+    stepQueueLength: window.app?.rooms?.[roomId]?.battle?.stepQueue?.length || 0,
+    requestType: window.app?.rooms?.[roomId]?.request?.requestType || null,
+  }), battleId);
+
+  console.log('Reload diagnostics (after identity re-assert, before explicit rejoin):', JSON.stringify(diagnostics));
+
+  // the URL-based navigation may have attempted to join the room before identity was reasserted
+  // above (as a fresh anonymous guest, not the original player) -- explicitly (re)join now that
+  // we're confirmed to be the right user, so the server sends us the player-specific request state
+  await page.evaluate((roomId) => window.app.send(`/join ${roomId}`), battleId);
+
+  // the room object appears in window.app.rooms almost immediately as an empty placeholder --
+  // actual log/state streams in asynchronously afterward, so wait for real content (a populated
+  // stepQueue), not just the room's existence, or every snapshot after "reload" reads as empty
+  await page.waitForFunction(
+    (roomId) => (window.app?.rooms?.[roomId]?.battle?.stepQueue?.length || 0) > 0,
+    battleId,
+    { timeout: 30000 },
+  );
+
+  await focusBattleRoom(page, battleId);
+
+  const postJoinDiagnostics = await page.evaluate((roomId) => ({
+    stepQueueLength: window.app?.rooms?.[roomId]?.battle?.stepQueue?.length || 0,
+    requestType: window.app?.rooms?.[roomId]?.request?.requestType || null,
+  }), battleId);
+
+  console.log('Reload diagnostics (after explicit rejoin + focus):', JSON.stringify(postJoinDiagnostics));
+};
 
 const waitForBattleProgress = async (page, battleId, previousLength) => page.waitForFunction(
   ({ roomId, length }) => {
@@ -672,6 +979,17 @@ const waitForBattleProgress = async (page, battleId, previousLength) => page.wai
   { roomId: battleId, length: previousLength },
   { timeout: 2500 },
 );
+
+// a forced-switch decision (after a faint) is a separate replacement phase from a normal simultaneous
+// move turn, and can take longer than the standard progress-wait to be server-confirmed. Submitting
+// another action while `requestType` is still 'switch' re-sends an already-in-flight decision, which
+// crashes Showdown's own client-side UI code (getPlayerChoicesHTML) -- so explicitly wait for the
+// request type to move on before letting the planned-turn loop continue
+const waitForSwitchResolved = async (page, battleId) => page.waitForFunction(
+  (roomId) => window.app?.rooms?.[roomId]?.request?.requestType !== 'switch',
+  battleId,
+  { timeout: 10000 },
+).catch(() => null);
 
 const normalizeMoveName = (value) => (
   (value || '')
@@ -721,9 +1039,34 @@ const choosePlannedAction = async (page, moveName) => {
         return { handled: false, reason: 'no legal switches' };
       }
 
-      room?.chooseSwitch?.(selectedSwitch.index);
+      // send the choice over the wire directly rather than via room.chooseSwitch(): the latter also
+      // synchronously re-renders the client's own battle controls, and in this client build that
+      // re-render (getPlayerChoicesHTML) throws on a fainted-mon replacement, aborting the whole run.
+      // The move branch below already uses this same `/choose` send for the same reason
+      window.app.send(`/choose switch ${selectedSwitch.index}`, roomId);
 
       return { handled: true, action: `switch:${selectedSwitch.index}` };
+    }
+
+    // a planned action of 'Switch' means "voluntarily switch out this turn" (a normal move-phase
+    // request, not a forced post-faint replacement) -- used to deterministically move the viewer's
+    // own attacker off the field without depending on it fainting to a damage roll
+    if (requestType === 'move' && expectedMoveName === 'Switch') {
+      const benchPokemon = room?.request?.side?.pokemon || [];
+      const target = benchPokemon
+        .map((pokemon, index) => ({
+          index: index + 1,
+          disabled: !!pokemon?.active || /\bfnt\b/i.test(pokemon?.condition || ''),
+        }))
+        .find((pokemon) => !pokemon.disabled);
+
+      if (!target) {
+        return { handled: false, reason: 'no legal voluntary switch target' };
+      }
+
+      window.app.send(`/choose switch ${target.index}`, roomId);
+
+      return { handled: true, action: `switch:${target.index}` };
     }
 
     return {
@@ -1171,13 +1514,6 @@ try {
   console.log('Seeded custom teams:');
   console.log(JSON.stringify(seededTeams, null, 2));
 
-  if (scenarioName !== 'temporary') {
-    await Promise.all([
-      setFormatAndTeam(pages[0], 'Showdex Custom A'),
-      setFormatAndTeam(pages[1], 'Showdex Custom B'),
-    ]);
-  }
-
   await Promise.all([
     useTeamForNextBattle(pages[0], 'Showdex Custom A'),
     useTeamForNextBattle(pages[1], 'Showdex Custom B'),
@@ -1217,6 +1553,21 @@ try {
 
   console.log('Battle rooms:', battleIds);
 
+  // resolve team preview for both sides directly -- the planned-turn loop below (which normally sends
+  // this choice) hasn't started yet, and nothing else will ever leave team preview on its own
+  await Promise.all(pages.map((page, index) => waitForRequestPresent(page, battleIds[index])));
+  await Promise.all(pages.map((page, index) => submitTeamPreview(page, battleIds[index])));
+
+  // captured right as turn 1 begins (after team preview resolves, before any planned move is
+  // submitted) -- this is the "battle just started, zero events observed" moment the blank
+  // neutral-prior estimate should already be visible for. Team preview itself is too early: Calcdex's
+  // per-Pokemon battle UI isn't mounted until the battle proper begins, so waiting is expected there
+  await waitForMoveRequest(pages[0], battleIds[0]).catch(() => null);
+  const initialSnapshot = await snapshotBattle(pages[0], battleIds[0]);
+
+  console.log('Initial snapshot (before any planned turn):');
+  console.log(JSON.stringify(initialSnapshot, null, 2));
+
   const appliedEstimates = new Set();
   const snapshots = [];
 
@@ -1226,6 +1577,12 @@ try {
     const previousStepQueueLength = await pages[0].evaluate((roomId) => (
       window.app?.rooms?.[roomId]?.battle?.stepQueue?.length || 0
     ), battleIds[0]);
+
+    // request briefly goes missing during phase transitions (e.g. right after the previous turn's
+    // switch/faint resolves) -- wait for it to be back before submitting the next planned choice,
+    // rather than racing it and crashing with requestType=undefined
+    await Promise.all(pages.map((page, index) => waitForRequestPresent(page, battleIds[index])));
+
     const actions = await Promise.all([
       choosePlannedAction(pages[0], plan.a),
       choosePlannedAction(pages[1], plan.b),
@@ -1237,6 +1594,10 @@ try {
       plan,
       actions,
     }, null, 2));
+
+    if (actions.some((action) => action?.action?.startsWith('switch:'))) {
+      await waitForSwitchResolved(pages[0], battleIds[0]);
+    }
 
     if (turnIndex > 0) {
       await waitForBattleProgress(pages[0], battleIds[0], previousStepQueueLength).catch((error) => {
@@ -1262,6 +1623,58 @@ try {
         console.log(`After applying estimate on turn ${turnIndex + 1}:`);
         console.log(JSON.stringify(appliedSnapshot, null, 2));
       }
+    }
+
+    if (scenario.reloadAfterTurn === turnIndex) {
+      console.log(`Reloading ${playerNames[0]} and rejoining the battle after planned turn ${turnIndex + 1}...`);
+      await reloadAndRejoinBattle(pages[0], playerNames[0], battleIds[0]);
+
+      // best-effort attempt to catch the transient window: this snapshot is taken as soon as the
+      // rejoined room has a populated stepQueue, which may be BEFORE Showdown re-sends the `|request|`
+      // that repopulates the auth player's roster -- exactly when a switched-out attacker lookup can
+      // fail. It's timing-dependent, so a clean result here doesn't prove the bug is absent
+      const postReloadSnapshot = await snapshotBattle(pages[0], battleIds[0]);
+      snapshots.push(postReloadSnapshot);
+
+      console.log(`Snapshot immediately after reload (after planned turn ${turnIndex + 1}):`);
+      console.log(JSON.stringify(postReloadSnapshot, null, 2));
+
+      // now let the client fully restore (wait for the move request to come back), then submit one
+      // more harmless turn (Blissey Recover / Mew Recover) to force a fresh inference sync tick with
+      // the now-complete roster. This is the reliable check: after this, Mew's Waterfall events must
+      // resolve without an attacker-lookup failure (i.e. the fix's "don't cache a tainted result"
+      // let it self-heal). Submitting a move without waiting for the request is what previously
+      // crashed with requestType=undefined, so gate on the request being present first
+      await pages[0].waitForFunction(
+        (roomId) => !!(window.app?.rooms?.[roomId]?.request),
+        battleIds[0],
+        { timeout: 20000 },
+      ).catch(() => null);
+      await pages[0].waitForTimeout(1000);
+
+      const resyncPrevLength = await pages[0].evaluate((roomId) => (
+        window.app?.rooms?.[roomId]?.battle?.stepQueue?.length || 0
+      ), battleIds[0]);
+      const resyncActions = await Promise.all([
+        choosePlannedAction(pages[0], 'Recover'),
+        choosePlannedAction(pages[1], 'Recover'),
+      ]);
+
+      console.log('Post-reload re-sync turn actions:');
+      console.log(JSON.stringify(resyncActions, null, 2));
+
+      await waitForBattleProgress(pages[0], battleIds[0], resyncPrevLength).catch(() => null);
+      await pages[0].waitForTimeout(500);
+
+      const healedSnapshot = await snapshotBattle(pages[0], battleIds[0]);
+      snapshots.push(healedSnapshot);
+
+      console.log('Snapshot after post-reload re-sync (self-heal / correctness check):');
+      console.log(JSON.stringify(healedSnapshot, null, 2));
+
+      // the reload IS the end of this scenario -- don't fall through to more scripted move turns
+      // (Vaporeon is now benched; there are no further planned turns that make sense)
+      break;
     }
 
     if ((snapshots.at(-1) || snapshot).ended) {

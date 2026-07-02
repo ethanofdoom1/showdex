@@ -42,6 +42,7 @@ export const HackmonsSpreadEstimate = ({
 
   const speedNotes = [...new Set((inference.speedNotes || []).filter(Boolean))];
   const modeledEvents = inference.events.length;
+  const outlierEvents = (estimate.matches || []).filter((match) => !!match.outlier).length;
   const estimateEvents = JSON.stringify((estimate.matches || []).map((match) => ({
     eventId: match.eventId,
     turn: match.turn,
@@ -51,6 +52,8 @@ export const HackmonsSpreadEstimate = ({
     rollRange: match.rollRange,
     distance: match.distance,
     error: match.error,
+    outlier: match.outlier,
+    ko: match.ko,
   })));
 
   const applyEstimate = () => updatePokemon({
@@ -114,8 +117,38 @@ export const HackmonsSpreadEstimate = ({
 
       <div className={styles.meta}>
         {modeledEvents} modeled damage event{modeledEvents === 1 ? '' : 's'}
+        {outlierEvents ? `, ${outlierEvents} outlier${outlierEvents === 1 ? '' : 's'}` : ''}
         {inference.ignoredEventCount ? `, ${inference.ignoredEventCount} unsupported ignored` : ''}
       </div>
+
+      {/*
+        TEMPORARY: manual-testing aid for reviewing per-event matches directly in a real battle
+        (rather than only via the e2e debug script). Ask to remove this block once done reviewing.
+      */}
+      {!!estimate.matches?.length && (
+        <div className={styles.debug}>
+          <span className={styles.label}>Debug: Per-Event Matches (temporary)</span>
+          <div className={styles.debugMatches}>
+            {estimate.matches.map((match) => (
+              <div
+                key={match.eventId}
+                className={cx(styles.debugMatchRow, {
+                  [styles.outlier]: !!match.outlier,
+                  [styles.error]: !!match.error,
+                })}
+              >
+                {`T${match.turn} ${match.moveName}: obs ${match.observedDamage}%`}
+                {match.rollRange ? ` | modeled ${match.rollRange[0]}-${match.rollRange[1]}%` : ''}
+                {typeof match.medianDamage === 'number' ? ` | median ${match.medianDamage}%` : ''}
+                {typeof match.distance === 'number' ? ` | Δ${match.distance}` : ''}
+                {match.ko ? ' | KO (obs truncated)' : ''}
+                {match.outlier ? ` | ${match.outlier.toUpperCase()}` : ''}
+                {match.error ? ` | ERROR: ${match.error}` : ''}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className={styles.actions}>
         <Button
