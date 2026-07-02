@@ -17,6 +17,7 @@ interface PendingMove {
   crit?: boolean;
   multiHit?: boolean;
   hits?: number;
+  hitCounter?: number;
 }
 
 interface PendingDamageEvent {
@@ -119,6 +120,7 @@ const clonePokemonSnapshot = (
   typeChanged: !!snapshot?.typeChanged,
   teraType: snapshot?.teraType || null,
   terastallized: !!snapshot?.terastallized,
+  abilityConfirmed: !!snapshot?.abilityConfirmed,
 });
 
 const getPokemonSnapshot = (
@@ -175,6 +177,11 @@ export const parseHackmonsInferenceEvents = (
   const hpState = new Map<string, number>();
   const maxHpState = new Map<string, number>();
   const pokemonState = new Map<string, HackmonsInferencePokemonSnapshot>();
+
+  // times each Pokemon has been directly hit by a damaging move this battle (Rage Fist's power scales
+  // off this). Unlike boosts/status, this does NOT reset on switch -- it's a persistent battle stat,
+  // matching the real mechanic (and how Last Respects' faintCounter is already treated in this codebase)
+  const hitCounterState = new Map<string, number>();
   const fieldState: HackmonsInferenceFieldSnapshot = {
     weather: null,
     terrain: null,
@@ -213,6 +220,7 @@ export const parseHackmonsInferenceEvents = (
           crit: pendingMove?.crit,
           multiHit: pendingMove?.multiHit,
           hits: pendingMove?.hits,
+          attackerHitCounter: pendingMove?.hitCounter,
           attackerBoosts: cloneBoosts(pendingEvent.attackerBoosts),
           defenderBoosts: cloneBoosts(pendingEvent.defenderBoosts),
           attackerStatus: pendingEvent.attackerStatus,
@@ -286,6 +294,7 @@ export const parseHackmonsInferenceEvents = (
           moveName,
           boosts: cloneBoosts(getBoosts(boostState, attacker.id)),
           status: getStatus(statusState, attacker.id),
+          hitCounter: hitCounterState.get(attacker.id) || 0,
         });
         moveOrder.push(pendingMoves.get(attacker.id));
 
@@ -308,6 +317,9 @@ export const parseHackmonsInferenceEvents = (
               teraType: snapshot.teraType || null,
               terastallized: !!snapshot.terastallized,
               typeChanged: false,
+              // once revealed, the ability stays known even after switching out (unlike types, which
+              // do revert to base on switch)
+              abilityConfirmed: !!snapshot.abilityConfirmed,
             });
           }
 
@@ -413,6 +425,19 @@ export const parseHackmonsInferenceEvents = (
             ...clonePokemonSnapshot(pokemonState.get(pokemon.id)),
             types: null,
             typeChanged: false,
+          });
+        }
+
+        return;
+      }
+
+      if (type === '-ability') {
+        const pokemon = parsePokemonToken(parts[2]);
+
+        if (pokemon.id) {
+          pokemonState.set(pokemon.id, {
+            ...clonePokemonSnapshot(pokemonState.get(pokemon.id)),
+            abilityConfirmed: true,
           });
         }
 
@@ -571,15 +596,25 @@ export const parseHackmonsInferenceEvents = (
       const pendingMove = [...pendingMoves.values()].at(-1);
       const attackerStartHp = pendingMove ? getHp(hpState, pendingMove.attackerId) : null;
       const attackerMaxHp = pendingMove ? getMaxHp(maxHpState, pendingMove.attackerId) : null;
-      const startHp = getHp(hpState, defender.id) ?? hp.maxhp;
+
+      // a KO reads `|-damage|p2a: Mew|0 fnt` -- a bare condition with no `/maxhp` -- so parseHpToken()
+      // yields maxhp null & the killing blow (often the single largest, most informative damage event)
+      // would be silently dropped by the guard below. Fall back to the defender's tracked max HP from
+      // its earlier switch-in/damage lines so the KO hit registers like any other direct hit
+      const maxHp = hp.maxhp ?? getMaxHp(maxHpState, defender.id);
+      const startHp = getHp(hpState, defender.id) ?? maxHp;
       const damage = typeof startHp === 'number' && typeof hp.hp === 'number'
         ? startHp - hp.hp
         : null;
 
-      if (!pendingMove || !defender.id || typeof damage !== 'number' || damage <= 0 || !hp.maxhp) {
+      if (!pendingMove || !defender.id || typeof damage !== 'number' || damage <= 0 || !maxHp) {
         ignoredEventCount++;
         return;
       }
+
+      // count this hit toward the defender's Rage Fist counter -- each individual hit of a multi-hit
+      // move increments it once, since each hit gets its own `-damage` line
+      hitCounterState.set(defender.id, (hitCounterState.get(defender.id) || 0) + 1);
 
       const damageKey = [
         pendingMove.attackerId,
@@ -590,7 +625,7 @@ export const parseHackmonsInferenceEvents = (
 
       if (pendingDamage) {
         pendingDamage.endHp = hp.hp;
-        pendingDamage.maxHp = hp.maxhp;
+        pendingDamage.maxHp = maxHp;
         pendingDamage.totalDamage += damage;
       } else {
         pendingDamageEvents.set(damageKey, {
@@ -606,7 +641,7 @@ export const parseHackmonsInferenceEvents = (
           attackerMaxHp,
           startHp,
           endHp: hp.hp,
-          maxHp: hp.maxhp,
+          maxHp,
           totalDamage: damage,
           attackerBoosts: cloneBoosts(getBoosts(boostState, pendingMove.attackerId)),
           defenderBoosts: cloneBoosts(getBoosts(boostState, defender.id)),
@@ -620,7 +655,7 @@ export const parseHackmonsInferenceEvents = (
       }
 
       hpState.set(defender.id, hp.hp);
-      maxHpState.set(defender.id, hp.maxhp);
+      maxHpState.set(defender.id, maxHp);
     });
 
     flushPendingDamageEvents();

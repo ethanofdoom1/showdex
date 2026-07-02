@@ -74,6 +74,36 @@
   opacity: 0.72;
 }
 
+// TEMPORARY: debug view of per-event matches for manual testing; remove once the reviewer is done
+.debug {
+  @include spacing.margin($top: 6px);
+}
+
+.debugMatches {
+  @include flex.column;
+  @include font.mono;
+  gap: 2px;
+  @include spacing.margin($top: 3px);
+  padding: 4px 6px;
+  background-color: color.alpha(colors.$gray, 0.08);
+  border-radius: 4px;
+  font-size: 9px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.debugMatchRow {
+  overflow-wrap: anywhere;
+
+  &.outlier {
+    color: colors.$orange;
+  }
+
+  &.error {
+    color: colors.$red;
+  }
+}
+
 .actions {
   @include flex.row($justify: flex-end, $align: center);
   gap: 6px;
