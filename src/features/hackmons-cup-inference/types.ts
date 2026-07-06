@@ -7,7 +7,7 @@ export type HackmonsInferenceConfidence = 'low' | 'medium' | 'high';
  * Direction a damage event's observed value falls outside the best candidate's modeled roll range.
  *
  * * `'too-high'` -- observed damage exceeds the modeled max, hinting at an uninferred damage-boosting
- *   item/ability (e.g. Choice Band, Life Orb, Huge Power) or an unmodeled move mechanic (e.g. Rollout).
+ *   item/ability (e.g. Choice Band, Life Orb, Huge Power) or an unmodeled move mechanic.
  * * `'too-low'` -- observed damage falls under the modeled min, hinting at an uninferred
  *   damage-reducing item/ability (e.g. Assault Vest, Filter) on whichever side is defending.
  * * Neither case is resolved by this feature yet -- the tag only marks *why* an event didn't fit, so a
@@ -16,6 +16,39 @@ export type HackmonsInferenceConfidence = 'low' | 'medium' | 'high';
  * @since 1.3.0
  */
 export type HackmonsDamageOutlier = 'too-high' | 'too-low';
+export type HackmonsDamageEffectiveness = 'super' | 'resisted' | 'immune' | 'neutral';
+export type HackmonsModifierSlot = 'item' | 'ability';
+export type HackmonsModifierScope =
+  | 'global-atk'
+  | 'global-spa'
+  | 'global-def'
+  | 'global-spd'
+  | 'global-both'
+  | 'super-effective-taken'
+  | 'full-hp-taken'
+  | 'stab'
+  | 'extra-hit'
+  | 'spe'
+  | { type: Showdown.TypeName; }
+  | { types: Showdown.TypeName[]; }
+  | { moveTag: string; };
+
+export interface HackmonsModifierClass {
+  id: string;
+  slot: HackmonsModifierSlot;
+  scope: HackmonsModifierScope;
+  multiplier: number;
+  representative: string;
+  examples: string[];
+}
+
+export interface HackmonsInferredModifier {
+  modifier: HackmonsModifierClass;
+  adopted: boolean;
+  relation: 'attacker' | 'defender';
+  supportingEventIds: string[];
+  corroboration?: string[];
+}
 
 export interface HackmonsInferenceFieldSnapshot {
   weather?: import('@smogon/calc').Weather | null;
@@ -39,6 +72,22 @@ export interface HackmonsInferencePokemonSnapshot {
    * @since 1.3.0
    */
   abilityConfirmed?: boolean;
+
+  /**
+   * Whether this Pokemon's item had been directly revealed (via a `-item`/`-enditem` log line, or a
+   * `[from] item: X` tag on a damage/heal line) as of this event. Once confirmed, the item is pinned
+   * as ground truth and the hypothesis search stops proposing item classes for this mon entirely.
+   *
+   * @since 1.3.0
+   */
+  itemConfirmed?: boolean;
+
+  /**
+   * The `formatId()`'d item name confirmed via `itemConfirmed`, e.g. `'lifeorb'`.
+   *
+   * @since 1.3.0
+   */
+  revealedItem?: string;
 }
 
 export interface HackmonsInferenceAssumptions {
@@ -69,6 +118,38 @@ export interface HackmonsInferenceEvent {
   crit?: boolean;
   multiHit?: boolean;
   hits?: number;
+  effectiveness?: HackmonsDamageEffectiveness;
+  speedOrderSuppressed?: boolean;
+
+  /**
+   * Raw per-hit damage values for this move use, in landing order. Populated alongside the
+   * aggregated `damage` total; used to detect Parental Bond's distinctive 2-hit (~100% + ~25%)
+   * shape on a move that isn't a real dex multi-hit move (no `-hitcount` line, so `multiHit` is
+   * falsy here).
+   *
+   * @since 1.3.0
+   */
+  hitDamages?: number[];
+
+  /**
+   * Whether a `[from] item: X` recoil line was observed on the ATTACKER immediately after this hit
+   * (e.g. Life Orb's unconditional 10% recoil). Absence across every supporting event is
+   * disqualifying evidence against a Life-Orb-shaped hypothesis (see the recoil-absence exclusion
+   * in `inferHackmonsSpread.ts`).
+   *
+   * @since 1.3.0
+   */
+  recoilObserved?: boolean;
+
+  /**
+   * Which continuous "stint" (time between switch-ins) the attacker was in when this move was used
+   * -- two events sharing an `attackerId` but a DIFFERENT move within the SAME stint prove the mon
+   * wasn't Choice-locked at the time (a real Choice item can't be un-selected without switching
+   * out). Incremented on every switch-in; not reset by fainting/reviving distinctions.
+   *
+   * @since 1.3.0
+   */
+  attackerStint?: number;
 
   /**
    * Number of times the attacker has been directly hit by a damaging move prior to this move
@@ -77,6 +158,22 @@ export interface HackmonsInferenceEvent {
    * @since 1.3.0
    */
   attackerHitCounter?: number;
+
+  /**
+   * Number of consecutive prior turns the attacker has successfully landed this exact move. Feeds
+   * *Fury Cutter* & *Rollout*'s variable base power, which doubles with each consecutive successful use.
+   *
+   * @since 1.3.0
+   */
+  attackerMoveRepeatCount?: number;
+
+  /**
+   * Whether the attacker has used *Defense Curl* at some prior point while on the field, doubling
+   * *Rollout*'s base power on top of `attackerMoveRepeatCount`'s own consecutive-use scaling.
+   *
+   * @since 1.3.0
+   */
+  attackerDefenseCurled?: boolean;
   attackerBoosts?: Showdown.StatsTableNoHp;
   defenderBoosts?: Showdown.StatsTableNoHp;
   attackerStatus?: Showdown.PokemonStatus | '';
@@ -94,6 +191,16 @@ export interface HackmonsDamageMatch {
   observedDamage: number;
   medianDamage?: number;
   distance?: number;
+
+  /**
+   * Feasibility distance used by `scoreCandidate()`: `0` whenever the candidate spread can actually
+   * produce this observation (i.e. it falls within `rollRange`), and only positive when it's
+   * genuinely unreachable by that spread. Distinct from `distance`, which centers on the median for
+   * display purposes even when the observation is already in-range.
+   *
+   * @since 1.3.0
+   */
+  rangeDistance?: number;
   maxHp?: number;
   crit?: boolean;
   attackerBoosts?: Showdown.StatsTableNoHp;
@@ -111,6 +218,7 @@ export interface HackmonsDamageMatch {
    * @since 1.3.0
    */
   outlier?: HackmonsDamageOutlier | null;
+  explainedBy?: string;
 
   /**
    * Whether this hit KO'd the defender (event `endHp === 0`). A KO's observed damage is truncated at
@@ -123,6 +231,13 @@ export interface HackmonsDamageMatch {
   ko?: boolean;
 }
 
+export interface HackmonsExtremalFeasibility {
+  high?: HackmonsDamageMatch;
+  low?: HackmonsDamageMatch;
+  highInfeasible?: boolean;
+  lowInfeasible?: boolean;
+}
+
 export interface HackmonsSpreadEstimate {
   level: number;
   nature: Showdown.PokemonNature;
@@ -132,6 +247,7 @@ export interface HackmonsSpreadEstimate {
   confidenceRatio: number;
   score: number;
   matches?: HackmonsDamageMatch[];
+  inferredModifiers?: HackmonsInferredModifier[];
 }
 
 export interface HackmonsInferenceState {

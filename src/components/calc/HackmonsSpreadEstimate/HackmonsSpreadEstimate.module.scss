@@ -69,6 +69,28 @@
   overflow-wrap: anywhere;
 }
 
+.modifiers {
+  @include flex.column;
+  gap: 3px;
+  @include spacing.margin($top: 6px);
+}
+
+.modifier {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  @include spacing.padding-xy($x: 5px, $y: 2px);
+  border: 1px solid color.alpha(colors.$green, 0.36);
+  border-radius: 4px;
+  color: colors.$green;
+  overflow-wrap: anywhere;
+
+  &.possible {
+    border-color: color.alpha(colors.$orange, 0.36);
+    color: colors.$orange;
+  }
+}
+
 .meta {
   @include spacing.margin($top: 6px);
   opacity: 0.72;

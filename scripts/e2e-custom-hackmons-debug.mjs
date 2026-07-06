@@ -50,6 +50,22 @@ ${nature} Nature
 ${ivs ? `IVs: ${ivs}\n` : ''}${moves.map((move) => `- ${move}`).join('\n')}
 `;
 
+// like teamA/teamB but lets the species be overridden -- needed for scenarios where the CANDIDATE
+// (opponent, team B slot) must be the lower-base-Spe Vaporeon (so a hidden Scarf can be genuinely
+// infeasible to explain away) while the VIEWER (team A slot, known) is the higher-base-Spe Mew --
+// the reverse of every other scenario. The "Custom A"/"Custom B" label must still match its slot
+// (seedCustomTeam/useTeamForNextBattle select teams by that exact string), so this keeps the label
+// tied to the slot argument while decoupling it from the species
+const customSpeciesTeam = (label, species, evs, nature, moves, { item = 'Leftovers', ability = 'Pressure', ivs } = {}) => `=== [${formatId}] Showdex Custom ${label} ===
+
+${species} @ ${item}
+Ability: ${ability}
+Level: 100
+EVs: ${evs}
+${nature} Nature
+${ivs ? `IVs: ${ivs}\n` : ''}${moves.map((move) => `- ${move}`).join('\n')}
+`;
+
 // team A with a second Pokemon (a "backup") behind Vaporeon -- needed for scenarios where the
 // viewer's own mon has to faint or switch out (e.g. testing reload behavior against a mon that's no
 // longer active). `vaporeon`/`backup` each take { evs, nature, moves, item, ability }
@@ -95,7 +111,12 @@ const scenarios = {
   // special attacker (Mew) -> SpA/SpD inference + speed bound from Electro Ball / turn order
   mixed: {
     teams: {
-      a: teamA('252 HP / 4 Def / 252 SpA', 'Modest', ['Body Slam', 'Water Spout', 'Psyshock', 'Recover']),
+      // Vaporeon's own SpA barely moves (base 110 dwarfs the EV/nature swing), so trading its SpA EVs
+      // for Def/SpD keeps the Psyshock/Water Spout signal on Mew intact while surviving Electro Ball
+      // (physical, Electric x2 vs Water) + super-effective Leaf Storm long enough to reach turn 4's
+      // Recover -- the original '4 Def / 252 SpA' split fainted at turn 3, before Body Slam/Water Spout
+      // ever fired, truncating the evidence needed to disambiguate Mew's nature (Slice B G5 gate).
+      a: teamA('252 HP / 128 Def / 128 SpD', 'Modest', ['Body Slam', 'Water Spout', 'Psyshock', 'Recover']),
       b: teamB('252 HP / 4 Atk / 252 SpA', 'Quiet', ['Electro Ball', 'Leaf Storm', 'Body Slam', 'Recover']),
     },
     plannedTurns: [
@@ -245,12 +266,11 @@ const scenarios = {
     ],
   },
 
-  // Rollout -> @smogon/calc treats it as a flat 30 BP move (no consecutive-use doubling, no Defense
-  // Curl synergy), so every hit after the Defense Curl setup is a guaranteed "too-high" outlier that
-  // will never land in the modeled roll range. Vaporeon only Recovers (deals no damage back), so
-  // Mew's ENTIRE damage evidence is unmatchable Rollout hits -- this is the exact shape of the bug
-  // report: before the graceful-degradation fix, zero in-range matches meant the whole "Estimated
-  // Spread" UI vanished instead of publishing a low-confidence estimate with outlier tags.
+  // Rollout -> calcMoveBasePower() now models both the per-turn consecutive-use doubling (30/60/120/
+  // 240/480) AND the separate Defense Curl doubling on top of it (moveRepeatCount/defenseCurled threaded
+  // in from parseStepQueue.ts's moveRepeatState/defenseCurlState). Vaporeon only Recovers (deals no
+  // damage back), so Mew's ENTIRE damage evidence is Rollout hits -- every one of them should land
+  // in-range (no `too-high` outliers) and confidence should climb to HIGH by the 3rd hit.
   rollout: {
     teams: {
       a: teamA('252 HP / 252 Def', 'Bold', ['Recover']),
@@ -262,6 +282,23 @@ const scenarios = {
       { a: 'Recover', b: 'Rollout' },
       { a: 'Recover', b: 'Rollout' },
       { a: 'Recover', b: 'Rollout' },
+    ],
+  },
+
+  // Fury Cutter -> same consecutive-use doubling as Rollout (40/80/160, capped at 160 in gen 6+), but
+  // with no Defense Curl-equivalent combo to model. Vaporeon only Recovers, so every Fury Cutter hit
+  // should land in-range once moveRepeatCount is threaded through correctly, with the 3rd+ hit capped
+  // at the same modeled max (160 BP) as the 2nd.
+  furycutter: {
+    teams: {
+      a: teamA('252 HP / 252 Def', 'Bold', ['Recover']),
+      b: teamB('252 HP / 252 Atk / 4 Def', 'Adamant', ['Fury Cutter', 'Recover']),
+    },
+    plannedTurns: [
+      { a: 'Recover', b: 'Fury Cutter' },
+      { a: 'Recover', b: 'Fury Cutter' },
+      { a: 'Recover', b: 'Fury Cutter' },
+      { a: 'Recover', b: 'Fury Cutter' },
     ],
   },
 
@@ -290,6 +327,97 @@ const scenarios = {
   // Mew's entire evidence is Body Slam hits at ~2x its true (neutral-ability) modeled max -- every
   // hit should land as a "too-high" outlier rather than dragging the inferred Atk EV/IV down to
   // (incorrectly) explain away a boost the search doesn't know about.
+  // G6 (Slice D.5): real Life Orb -> Showdown's client already auto-populates `pokemon.item` on the
+  // `[from] item: Life Orb` recoil reveal, and the EXISTING `candidateItemPinned()` check (Group 6)
+  // already stops the hypothesis search from proposing item classes once `.item` is known -- verified
+  // this requires NO new ground-truthing code (only the recoil-ABSENCE exclusion below is new).
+  // Expect: 0 outlier tags (the real item is used from turn 1), no `item-both-1.3` entry ever
+  // proposed (nothing to search once pinned).
+  lifeorb: {
+    teams: {
+      a: teamA('252 HP / 252 Def', 'Bold', ['Recover']),
+      b: teamB('252 HP / 252 Atk / 4 Def', 'Adamant', ['Body Slam', 'Recover'], { item: 'Life Orb' }),
+    },
+    plannedTurns: [
+      { a: 'Recover', b: 'Body Slam' },
+      { a: 'Recover', b: 'Body Slam' },
+      { a: 'Recover', b: 'Body Slam' },
+    ],
+  },
+
+  // Life Orb recoil-ABSENCE exclusion (Slice D.5, new mechanism): opponent Mew has a HIDDEN Choice
+  // Band (not Life Orb) and only ever uses Body Slam (staying choice-lock-consistent so that
+  // exclusion doesn't also fire) -- the real x1.5 Atk boost creates a "too-high" outlier that T1
+  // proposes BOTH `item-atk-1.5` (Choice Band, correct) and `item-both-1.3` (Life Orb) for, since
+  // nothing else distinguishes them here (spec risk: "spread<->modifier degeneracy", 1.3x at a lower
+  // implied Atk can independently fit the same data). Without the new recoil-absence check, Life Orb
+  // could tie or win; with it, Life Orb is rejected outright since no `[from] item: Life Orb` line
+  // ever appears, leaving Choice Band as the sole/correct adopted class.
+  lifeorbexcluded: {
+    teams: {
+      a: teamA('252 HP / 252 Def', 'Bold', ['Recover']),
+      b: teamB('252 HP / 252 Atk / 4 Def', 'Adamant', ['Body Slam', 'Recover'], { item: 'Choice Band' }),
+    },
+    plannedTurns: [
+      { a: 'Recover', b: 'Body Slam' },
+      { a: 'Recover', b: 'Body Slam' },
+      { a: 'Recover', b: 'Body Slam' },
+    ],
+  },
+
+  // G9 (Slice D.5): Choice-lock move-switch exclusion regression -- opponent Mew has a HIDDEN Huge
+  // Power (Atk x2 ability, not an item) and alternates TWO DIFFERENT attacking moves without ever
+  // switching out, which unambiguously proves no Choice item is held. The x2 outlier is big enough
+  // that `item-atk-1.5` (Choice Band, x1.5) would otherwise also get proposed by T1 as a
+  // lower-magnitude alternative explanation for individual hits -- the choice-lock exclusion must
+  // reject it outright regardless, leaving only the correct `ability-atk-2` (Huge Power) adopted.
+  choicelock: {
+    teams: {
+      a: teamA('252 HP / 252 Def', 'Bold', ['Recover']),
+      b: teamB('252 HP / 252 Atk / 4 Def', 'Adamant', ['Body Slam', 'Crunch', 'Recover'], { ability: 'Huge Power' }),
+    },
+    plannedTurns: [
+      { a: 'Recover', b: 'Body Slam' },
+      { a: 'Recover', b: 'Crunch' },
+      { a: 'Recover', b: 'Body Slam' },
+      { a: 'Recover', b: 'Crunch' },
+    ],
+  },
+
+  // G7 (Slice D.5): Thick Fat -- opponent Mew has (hidden) Thick Fat and takes a Fire move + a
+  // neutral-type move from Vaporeon, both special (same defensiveStat bucket so both get scored).
+  // Mew's SpD is maxed to searchBestCandidates()'s own ceiling (same "zero headroom" trick as
+  // zapplate) so Flamethrower's halved damage is structurally forced to read as an outlier at the
+  // true (unmodified) SpD, rather than the search inflating its SpD guess to explain it away.
+  thickfat: {
+    teams: {
+      a: teamA('252 HP / 252 SpA / 4 Def', 'Modest', ['Flamethrower', 'Psychic', 'Recover']),
+      b: teamB('252 HP / 4 Atk / 252 SpD', 'Calm', ['Recover'], { ability: 'Thick Fat' }),
+    },
+    plannedTurns: [
+      { a: 'Flamethrower', b: 'Recover' },
+      { a: 'Psychic', b: 'Recover' },
+      { a: 'Flamethrower', b: 'Recover' },
+      { a: 'Psychic', b: 'Recover' },
+    ],
+  },
+
+  // G8 (Slice D.5): Parental Bond -- opponent Mew has (hidden) Parental Bond and uses Body Slam (no
+  // dex `-hitcount` line) vs. Recover-only Vaporeon. Each use should land as TWO separate `-damage`
+  // lines (~100% + ~25%), which `parseStepQueue.ts` now preserves as `hitDamages` instead of silently
+  // summing into one total.
+  parentalbond: {
+    teams: {
+      a: teamA('252 HP / 252 Def', 'Bold', ['Recover']),
+      b: teamB('252 HP / 252 Atk / 4 Def', 'Adamant', ['Body Slam', 'Recover'], { ability: 'Parental Bond' }),
+    },
+    plannedTurns: [
+      { a: 'Recover', b: 'Body Slam' },
+      { a: 'Recover', b: 'Body Slam' },
+      { a: 'Recover', b: 'Body Slam' },
+    ],
+  },
+
   hugepower: {
     teams: {
       a: teamA('252 HP / 252 Def', 'Bold', ['Recover']),
@@ -300,6 +428,105 @@ const scenarios = {
       { a: 'Recover', b: 'Body Slam' },
       { a: 'Recover', b: 'Body Slam' },
       { a: 'Recover', b: 'Body Slam' },
+    ],
+  },
+
+  // T3 (speed-bound contradiction) -> Mew @ Iron Ball with 0 Spe IV/EV has a raw Spe of exactly 184
+  // (the spec's "0/0/-" floor at L100), which is comfortably ABOVE Vaporeon's known ~166 raw Spe --
+  // yet Iron Ball halves Mew's EFFECTIVE Spe to 92, so Vaporeon (faster in practice) consistently
+  // outspeeds it every same-priority turn. A candidate search that doesn't consider a speed modifier
+  // can't explain this (even Mew's slowest possible raw Spe, 184, is still faster than Vaporeon), so
+  // it should trigger T3 and adopt the item-spe-0.5 class (Iron Ball among its examples).
+  // Zen Headbutt (not Body Slam): Mew is always the SLOWER mon here, so its 10% flinch chance can
+  // never actually trigger (flinch only cancels a move the target hasn't taken yet this turn, and
+  // Vaporeon always acts first) -- Body Slam's 30% paralysis chance was tried first and repeatedly
+  // locked Vaporeon out of acting for a turn, cutting the speed-comparison sample size unpredictably.
+  ironball: {
+    teams: {
+      a: teamA('252 HP / 128 Def / 128 SpA', 'Bold', ['Psyshock', 'Recover']),
+      b: teamB('252 HP / 252 Atk / 4 Def', 'Brave', ['Zen Headbutt', 'Recover'], { item: 'Iron Ball', ivs: '0 Spe' }),
+    },
+    plannedTurns: [
+      { a: 'Psyshock', b: 'Zen Headbutt' },
+      { a: 'Psyshock', b: 'Zen Headbutt' },
+      { a: 'Recover', b: 'Recover' },
+      { a: 'Psyshock', b: 'Zen Headbutt' },
+      { a: 'Recover', b: 'Recover' },
+      { a: 'Psyshock', b: 'Zen Headbutt' },
+    ],
+  },
+
+  // T2 (joint conflict) -> Mew @ Zap Plate is given a MAXED SpA spread (252 EV / 31 IV / Modest, the
+  // exact same ceiling searchBestCandidates() itself can reach) so the neutral-assumption search has
+  // ZERO headroom to "cheat" by inflating its guess toward Thunderbolt's boosted damage -- it can only
+  // ever land exactly on the true (unboosted) SpA, which is what Water Pulse's real damage actually
+  // reflects. That structurally forces Water Pulse in-range and Thunderbolt (the only Zap-Plate,
+  // Electric-scoped move) into a "too-high" outlier every run, deterministically, rather than relying
+  // on the search happening to compromise in the intended direction (an earlier draft of this scenario
+  // left headroom below the ceiling and the search inflated SpA to fit Thunderbolt instead, silently
+  // leaving Water Pulse "too-low" -- the opposite of Case C's signature). A global SpA hypothesis
+  // (Choice Specs) or the wrong-multiplier ability class (Transistor, x1.5 vs. the real x1.2) would
+  // each require a LOWER implied SpA to fit Thunderbolt, which then overshoots/undershoots Water Pulse
+  // (collateral, A2) -- only the correctly-scoped, correctly-multiplied item class survives. Vaporeon
+  // only Recovers (no damage back), so Mew's entire evidence is these two move types.
+  zapplate: {
+    teams: {
+      a: teamA('252 HP / 252 Def / 4 SpD', 'Bold', ['Recover']),
+      b: teamB('252 HP / 252 SpA / 4 SpD', 'Modest', ['Thunderbolt', 'Water Pulse', 'Recover'], { item: 'Zap Plate' }),
+    },
+    plannedTurns: [
+      { a: 'Recover', b: 'Thunderbolt' },
+      { a: 'Recover', b: 'Water Pulse' },
+      { a: 'Recover', b: 'Thunderbolt' },
+      { a: 'Recover', b: 'Water Pulse' },
+      { a: 'Recover', b: 'Thunderbolt' },
+      { a: 'Recover', b: 'Water Pulse' },
+    ],
+  },
+
+  // G5-style false-positive guard for the known-mon item-speed fix: Vaporeon (the VIEWER's own,
+  // fully-known mon) holds a real Choice Scarf -- Mew's real Spe (31 IV/0 EV/neutral, raw 236) would
+  // normally outspeed Vaporeon's un-scarfed raw Spe (31 IV/0 EV/neutral, raw 166), but Vaporeon's real
+  // Scarf boosts it to an effective 249, reversing the order (Vaporeon moves first). Since Vaporeon's
+  // item is ground truth (not hidden), NO modifier should ever be hypothesized for Mew here -- before
+  // the fix, `resolveSpeedEventContext()`/`describeSpeedBound()` ignored Vaporeon's own real item when
+  // computing the bound Mew must satisfy, so Mew's theoretical floor (184, the "0/0/-" extremal) looked
+  // like it violated the (wrongly un-scarfed, 166) bound, producing a FALSE `item-spe-0.5` hypothesis on
+  // Mew despite Mew doing nothing unusual at all.
+  viewerscarf: {
+    teams: {
+      a: teamA('252 HP / 128 Def / 128 SpD', 'Modest', ['Psyshock'], { item: 'Choice Scarf' }),
+      b: teamB('252 HP / 252 Atk / 4 Def', 'Adamant', ['Zen Headbutt'], {}),
+    },
+    plannedTurns: [
+      { a: 'Psyshock', b: 'Zen Headbutt' },
+      { a: 'Psyshock', b: 'Zen Headbutt' },
+      { a: 'Psyshock', b: 'Zen Headbutt' },
+    ],
+  },
+
+  // mirror of `viewerscarf` -- this time the CANDIDATE (opponent, team B) holds the real, HIDDEN Choice
+  // Scarf, and unlike the fixed Mew-as-candidate matchup used everywhere else, the species are SWAPPED:
+  // Vaporeon (base Spe 65, lower) is the candidate/opponent, Mew (base Spe 100, higher) is the viewer.
+  // This is the only way to construct a genuine T3 "faster" contradiction with these two species --
+  // Mew's own base Spe is so high that a Mew-candidate can always explain "moved first" via a real
+  // (Scarf-free) max-investment spread (confirmed structurally impossible to trigger earlier this
+  // session), but Vaporeon's own theoretical MAXIMUM raw Spe (31 IV/252 EV/+Spe nature, ~251) is still
+  // below Mew's real known raw Spe (31 IV/252 EV/+Spe nature, ~328) -- so Vaporeon moving first is
+  // genuinely infeasible without its hidden Scarf (251 * 1.5 = ~376, which does clear 328). Verifies
+  // the exact concern raised in this session: when the CANDIDATE's own hidden item is the reason it
+  // moved unexpectedly first, its damage event (Aqua Tail here) must still show up in
+  // estimateDamageEvents/backendEventCount, never silently dropped into backendIgnoredCount, regardless
+  // of whether a T3 hypothesis ends up adopted.
+  opponentscarf: {
+    teams: {
+      a: customSpeciesTeam('A', 'Mew', '252 HP / 4 Def / 252 Spe', 'Timid', ['Moonblast']),
+      b: customSpeciesTeam('B', 'Vaporeon', '128 HP / 128 Atk / 252 Spe', 'Jolly', ['Aqua Tail'], { item: 'Choice Scarf' }),
+    },
+    plannedTurns: [
+      { a: 'Moonblast', b: 'Aqua Tail' },
+      { a: 'Moonblast', b: 'Aqua Tail' },
+      { a: 'Moonblast', b: 'Aqua Tail' },
     ],
   },
 
@@ -903,16 +1130,6 @@ const submitTeamPreview = async (page, battleId) => page.evaluate((roomId) => {
 // re-authenticates the same guest session from the persistent profile and rejoins the in-progress
 // battle), rather than assuming the client auto-restores the previously open room tab
 const reloadAndRejoinBattle = async (page, username, battleId) => {
-  // TEMPORARY diagnostic: capture raw websocket frames around the post-reload identity handshake so a
-  // failed /trn rename can be told apart from a slow one (does the server ever send |nametaken| or
-  // |updateuser|, or is nothing coming back at all?). Remove once the reload identity bug is resolved
-  const socketFrames = [];
-
-  page.on('websocket', (ws) => {
-    ws.on('framereceived', (frame) => socketFrames.push({ dir: 'recv', payload: String(frame.payload).slice(0, 300) }));
-    ws.on('framesent', (frame) => socketFrames.push({ dir: 'sent', payload: String(frame.payload).slice(0, 300) }));
-  });
-
   await page.goto(`${showdownUrl}/${battleId}`, { waitUntil: 'domcontentloaded', timeout: 20000 });
   await muteClient(page);
   await ensureConnected(page);
@@ -929,11 +1146,6 @@ const reloadAndRejoinBattle = async (page, username, battleId) => {
   if (!renamed) {
     console.log(`Reload identity handshake failed for ${username}; proceeding anyway (diagnostics below will show the stuck state).`);
   }
-
-  // TEMPORARY diagnostic: print anything trn/rename/identity-related seen on the wire. Remove alongside
-  // the frame capture above once the reload identity bug is resolved
-  const identityFrames = socketFrames.filter((frame) => /trn|nametaken|updateuser|challstr/i.test(frame.payload));
-  console.log('Reload identity websocket frames:', JSON.stringify(identityFrames));
 
   const diagnostics = await page.evaluate((roomId) => ({
     url: window.location.href,
@@ -1192,8 +1404,10 @@ const snapshotBattle = async (page, battleId) => page.evaluate(({ roomId, realSp
   };
   const backendEstimateEvents = parseJsonAttr('data-hackmons-estimate-events', []);
   const backendSpeedNotes = parseJsonAttr('data-hackmons-speed-notes', []);
+  const backendModifiers = parseJsonAttr('data-hackmons-modifiers', []);
   const backendEventCount = Number(estimateNode?.getAttribute('data-hackmons-event-count')) || 0;
   const backendMatchCount = Number(estimateNode?.getAttribute('data-hackmons-match-count')) || 0;
+  const backendIgnoredCount = Number(estimateNode?.getAttribute('data-hackmons-ignored-count')) || 0;
   const parsePokemonId = (token) => {
     const [side, ...nameParts] = (token || '').split(':');
     return `${side || ''}:${nameParts.join(':').trim() || side || ''}`.toLowerCase().replace(/[^a-z0-9:]+/g, '');
@@ -1292,6 +1506,8 @@ const snapshotBattle = async (page, battleId) => page.evaluate(({ roomId, realSp
       turn: Number(match.turn ?? match[1]),
       moveName: match.moveName ?? match[2],
       observedDamage: Number(match.observedDamage ?? match[3]),
+      outlier: match.outlier,
+      explainedBy: match.explainedBy,
     }));
   const defaultStats = () => ({ hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 });
   const parseSpread = (text, label) => {
@@ -1437,7 +1653,9 @@ const snapshotBattle = async (page, battleId) => page.evaluate(({ roomId, realSp
     estimateDamageEvents,
     backendEventCount,
     backendMatchCount,
+    backendIgnoredCount,
     backendSpeedNotes,
+    backendModifiers,
     damageMismatches,
     temporaryEventChecks,
     spreadVerification,

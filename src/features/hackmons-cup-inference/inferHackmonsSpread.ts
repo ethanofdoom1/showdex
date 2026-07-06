@@ -1,9 +1,10 @@
 import {
   type AbilityName,
+  type ItemName,
   type ShowdexCalcMods,
   calculate,
 } from '@smogon/calc';
-import { PokemonNatures } from '@showdex/consts/dex';
+import { PokemonNatures, PokemonSpeedReductionItems, PokemonTypeAssociativeItems } from '@showdex/consts/dex';
 import {
   type CalcdexBattleField,
   type CalcdexBattleState,
@@ -21,11 +22,15 @@ import { getGenDexForFormat } from '@showdex/utils/dex';
 import {
   type HackmonsDamageMatch,
   type HackmonsDamageOutlier,
+  type HackmonsExtremalFeasibility,
+  type HackmonsInferredModifier,
   type HackmonsInferenceFieldSnapshot,
   type HackmonsInferenceEvent,
   type HackmonsInferenceMap,
   type HackmonsInferencePokemonSnapshot,
   type HackmonsInferenceState,
+  type HackmonsModifierClass,
+  type HackmonsModifierSlot,
 } from './types';
 
 const StatNames: Showdown.StatName[] = ['hp', 'atk', 'def', 'spa', 'spd', 'spe'];
@@ -36,12 +41,267 @@ const CoordinateCandidateEvs = [0, 32, 64, 96, DefaultEv, 160, 192, 224, 252];
 const MaxScoredEventsPerCategory = 3;
 const MaxCandidateCount = 4000;
 const NeutralNature = 'Serious' as Showdown.PokemonNature;
-const CacheVersion = 'bounded-search-v17';
+const CacheVersion = 'bounded-search-v23';
 
 // keyed per defending Pokemon `calcdexId` + that mon's event signature, so a new battle log step
 // only re-searches the mon(s) whose events actually changed (see inferHackmonsSpread())
 const InferenceCache = new Map<string, HackmonsInferenceState>();
 const SpeedDependentMoves = new Set(['electroball', 'gyroball']);
+
+// out-of-range distance must always dominate median-centering distance in scoreCandidate() -- a
+// single unit of infeasibility (an observation the candidate can't produce at all) has to outweigh
+// any possible in-range centering difference, or a "closer to median but impossible" spread could
+// still beat a "further from median but possible" one
+const RangeInfeasibilityWeight = 1e6;
+const ModifierComplexityPenalty = 6 * RangeInfeasibilityWeight;
+
+interface ModifierOverride {
+  id: string;
+  item?: ItemName;
+  ability?: AbilityName;
+  speedMultiplier?: number;
+}
+
+const ModifierCatalog: HackmonsModifierClass[] = [
+  {
+    id: 'ability-atk-2',
+    slot: 'ability',
+    scope: 'global-atk',
+    multiplier: 2,
+    representative: 'Huge Power',
+    examples: ['Huge Power', 'Pure Power'],
+  },
+  {
+    id: 'item-atk-1.5',
+    slot: 'item',
+    scope: 'global-atk',
+    multiplier: 1.5,
+    representative: 'Choice Band',
+    examples: ['Choice Band', 'Gorilla Tactics', 'Hustle'],
+  },
+  {
+    id: 'item-spa-1.5',
+    slot: 'item',
+    scope: 'global-spa',
+    multiplier: 1.5,
+    representative: 'Choice Specs',
+    examples: ['Choice Specs'],
+  },
+  {
+    id: 'item-both-1.3',
+    slot: 'item',
+    scope: 'global-both',
+    multiplier: 1.3,
+    representative: 'Life Orb',
+    examples: ['Life Orb'],
+  },
+  {
+    id: 'ability-atk-0.5',
+    slot: 'ability',
+    scope: 'global-atk',
+    multiplier: 0.5,
+    representative: 'Slow Start',
+    examples: ['Slow Start'],
+  },
+  {
+    id: 'ability-def-2',
+    slot: 'ability',
+    scope: 'global-def',
+    multiplier: 2,
+    representative: 'Fur Coat',
+    examples: ['Fur Coat'],
+  },
+  {
+    id: 'ability-special-taken-0.5',
+    slot: 'ability',
+    scope: 'global-spd',
+    multiplier: 0.5,
+    representative: 'Ice Scales',
+    examples: ['Ice Scales'],
+  },
+  {
+    id: 'item-spd-1.5',
+    slot: 'item',
+    scope: 'global-spd',
+    multiplier: 1.5,
+    representative: 'Assault Vest',
+    examples: ['Assault Vest'],
+  },
+  {
+    id: 'ability-se-taken-0.75',
+    slot: 'ability',
+    scope: 'super-effective-taken',
+    multiplier: 0.75,
+    representative: 'Filter',
+    examples: ['Filter', 'Solid Rock', 'Prism Armor'],
+  },
+  {
+    id: 'ability-full-hp-taken-0.5',
+    slot: 'ability',
+    scope: 'full-hp-taken',
+    multiplier: 0.5,
+    representative: 'Multiscale',
+    examples: ['Multiscale', 'Shadow Shield'],
+  },
+  {
+    id: 'ability-thickfat-fireice-0.5',
+    slot: 'ability',
+    scope: { types: ['Fire', 'Ice'] },
+    multiplier: 0.5,
+    representative: 'Thick Fat',
+    examples: ['Thick Fat'],
+  },
+  {
+    id: 'item-spe-1.5',
+    slot: 'item',
+    scope: 'spe',
+    multiplier: 1.5,
+    representative: 'Choice Scarf',
+    examples: ['Choice Scarf'],
+  },
+  {
+    id: 'item-spe-0.5',
+    slot: 'item',
+    scope: 'spe',
+    multiplier: 0.5,
+    representative: 'Iron Ball',
+    examples: ['Iron Ball', 'Power Anklet', 'Power Weight', 'Power Bracer', 'Power Belt', 'Power Lens', 'Power Band', 'Macho Brace'],
+  },
+  {
+    id: 'ability-spe-0.5',
+    slot: 'ability',
+    scope: 'spe',
+    multiplier: 0.5,
+    representative: 'Slow Start',
+    examples: ['Slow Start'],
+  },
+];
+
+const modifierById = (
+  id: string,
+): HackmonsModifierClass => ModifierCatalog.find((modifier) => modifier.id === id);
+
+// Group 3 (scoped offensive boosts, T2): unlike Groups 1/2/5's fixed catalog, "one type x1.2/x1.5"
+// is a template parameterized by whichever type the evidence points at, so its classes are generated
+// on demand (see itemTypeBoostClass()/abilityTypeBoostClass()) rather than listed in ModifierCatalog.
+// Representative real items/abilities per type -- Plates cover every type but Normal (Silk Scarf);
+// Transistor-class abilities only exist for these four types in the actual games.
+const TypeBoostItemByType: Partial<Record<Showdown.TypeName, ItemName>> = {
+  Normal: 'Silk Scarf',
+  Fighting: 'Fist Plate',
+  Flying: 'Sky Plate',
+  Poison: 'Toxic Plate',
+  Ground: 'Earth Plate',
+  Rock: 'Stone Plate',
+  Bug: 'Insect Plate',
+  Ghost: 'Spooky Plate',
+  Steel: 'Iron Plate',
+  Fire: 'Flame Plate',
+  Water: 'Splash Plate',
+  Grass: 'Meadow Plate',
+  Electric: 'Zap Plate',
+  Psychic: 'Mind Plate',
+  Ice: 'Icicle Plate',
+  Dragon: 'Draco Plate',
+  Dark: 'Dread Plate',
+  Fairy: 'Pixie Plate',
+} as Partial<Record<Showdown.TypeName, ItemName>>;
+
+const TypeBoostAbilityByType: Partial<Record<Showdown.TypeName, AbilityName>> = {
+  Electric: 'Transistor',
+  Rock: 'Rocky Payload',
+  Steel: 'Steelworker',
+  Dragon: 'Dragon\'s Maw',
+} as Partial<Record<Showdown.TypeName, AbilityName>>;
+
+// PokemonTypeAssociativeItems mixes boosting items with type-changers (Drives/Memories, out of scope
+// here -- they don't boost damage) and resistance berries (one-shot, announce themselves via
+// |-enditem|, also out of scope per the spec's §2) -- filter both out to leave just the classic
+// x1.2 type-boost items for the modifier class's display-only `examples` list
+const ExcludedTypeBoostItemSuffixes = ['Berry', 'Memory', 'Drive'];
+
+const typeBoostItemExamples = (
+  type: Showdown.TypeName,
+): string[] => {
+  const examples = (Object.entries(PokemonTypeAssociativeItems) as [string, Showdown.TypeName][])
+    .filter(([item, itemType]) => (
+      itemType === type && !ExcludedTypeBoostItemSuffixes.some((suffix) => item.endsWith(suffix))
+    ))
+    .map(([item]) => item);
+
+  return examples.length ? examples : [TypeBoostItemByType[type]].filter(Boolean);
+};
+
+const itemTypeBoostClass = (
+  type: Showdown.TypeName,
+): HackmonsModifierClass => ({
+  id: `item-type-${formatId(type)}-1.2`,
+  slot: 'item',
+  scope: { type },
+  multiplier: 1.2,
+  representative: TypeBoostItemByType[type],
+  examples: typeBoostItemExamples(type),
+});
+
+const abilityTypeBoostClass = (
+  type: Showdown.TypeName,
+): HackmonsModifierClass => ({
+  id: `ability-type-${formatId(type)}-1.5`,
+  slot: 'ability',
+  scope: { type },
+  multiplier: 1.5,
+  representative: TypeBoostAbilityByType[type],
+  examples: [TypeBoostAbilityByType[type]],
+});
+
+const AdaptabilityModifier: HackmonsModifierClass = {
+  id: 'ability-stab-2',
+  slot: 'ability',
+  scope: 'stab',
+  multiplier: 2,
+  representative: 'Adaptability',
+  examples: ['Adaptability'],
+};
+
+const modifierOverrideFromClass = (
+  modifier: HackmonsModifierClass,
+): ModifierOverride => ({
+  id: modifier.id,
+  ...(modifier.slot === 'item' ? { item: modifier.representative as ItemName } : null),
+  ...(modifier.slot === 'ability' ? { ability: modifier.representative as AbilityName } : null),
+  ...(modifier.scope === 'spe' ? { speedMultiplier: modifier.multiplier } : null),
+});
+
+// combines a damage-side and speed-side adopted modifier (e.g. Huge Power + Iron Ball) into one
+// override -- each targets a different facet (item/ability/speedMultiplier) so there's nothing to
+// resolve conflict-wise, just union the fields; `undefined` entries (nothing adopted on that side)
+// are skipped
+const mergeModifierOverrides = (
+  ...overrides: ModifierOverride[]
+): ModifierOverride => overrides.filter(Boolean).reduce((merged, override) => ({
+  id: merged.id ? `${merged.id}+${override.id}` : override.id,
+  item: merged.item || override.item,
+  ability: merged.ability || override.ability,
+  speedMultiplier: merged.speedMultiplier || override.speedMultiplier,
+}), {} as ModifierOverride);
+
+const formatModifierScope = (
+  scope: HackmonsModifierClass['scope'],
+): string => {
+  if (typeof scope !== 'string') {
+    if ('type' in scope) {
+      return scope.type;
+    }
+
+    if ('types' in scope) {
+      return scope.types.join('/');
+    }
+
+    return scope.moveTag;
+  }
+
+  return scope === 'stab' ? 'STAB' : scope;
+};
 
 const blankSpread = (value: number): Showdown.StatsTable => StatNames.reduce((output, stat) => {
   output[stat] = value;
@@ -310,6 +570,7 @@ const NeutralAbility = 'Illuminate' as AbilityName;
 const applyInferencePokemonAssumptions = (
   pokemon: CalcdexPokemon,
   neutralizeUnconfirmedAbility?: boolean,
+  modifierOverride?: ModifierOverride,
 ): CalcdexPokemon => ({
   ...pokemon,
 
@@ -332,6 +593,8 @@ const applyInferencePokemonAssumptions = (
   // clean in e2e (which can't click the UI), so this is the only remaining override channel.
   dirtyBoosts: null,
   ...(neutralizeUnconfirmedAbility ? { ability: NeutralAbility } : null),
+  ...(modifierOverride?.item ? { item: modifierOverride.item } : null),
+  ...(modifierOverride?.ability ? { ability: modifierOverride.ability } : null),
 });
 
 function resolveEventRelation(
@@ -359,10 +622,30 @@ const getMoveData = (
 ) => getGenDexForFormat(state.format)?.moves.get(formatId(event.moveName) as never) as {
   category?: Showdown.MoveCategory;
   priority?: number;
+  type?: Showdown.TypeName;
   overrideOffensiveStat?: Showdown.StatNameNoHp;
   overrideDefensiveStat?: Showdown.StatNameNoHp;
   overrideOffensivePokemon?: 'source' | 'target';
   overrideDefensivePokemon?: 'source' | 'target';
+};
+
+// STAB scope (Adaptability, Group 3): whether this event's move shares a type with the candidate's
+// own known/snapshotted types at the time of the event (mirrors evaluateCandidateEvent()'s own
+// applyEventPokemonSnapshot() call for type-change handling, e.g. Protean)
+const isEventStabMove = (
+  state: CalcdexBattleState,
+  event: HackmonsInferenceEvent,
+  candidatePokemon: CalcdexPokemon,
+): boolean => {
+  const moveType = getMoveData(state, event)?.type;
+
+  if (!moveType) {
+    return false;
+  }
+
+  const types = applyEventPokemonSnapshot(state.format, candidatePokemon, event.attackerSnapshot)?.types;
+
+  return !!types?.includes(moveType);
 };
 
 const getMoveInfluence = (
@@ -397,7 +680,9 @@ const evaluateCandidateEvent = (
   nature: Showdown.PokemonNature,
   ivs: Showdown.StatsTable,
   evs: Showdown.StatsTable,
+  context: DamageEventContext,
   rollCache?: Map<string, number[]>,
+  modifierOverride?: ModifierOverride,
 ): HackmonsDamageMatch => {
   if (event.eventType === 'speed') {
     return null;
@@ -420,8 +705,13 @@ const evaluateCandidateEvent = (
     return emptyMatch('missing dex');
   }
 
-  const attackerMatch = findPokemonByLogName(state, event.attackerName, event.attackerKey, event.attackerId);
-  const defenderMatch = findPokemonByLogName(state, event.defenderName, event.defenderKey, event.defenderId);
+  const {
+    attackerMatch,
+    defenderMatch,
+    relation,
+    relevantStats,
+    eventField,
+  } = context;
 
   if (!attackerMatch?.pokemon) {
     return emptyMatch(`attacker lookup failed ${event.attackerKey || '?'}:${event.attackerName || '(unknown)'}`);
@@ -430,14 +720,6 @@ const evaluateCandidateEvent = (
   if (!defenderMatch?.pokemon) {
     return emptyMatch(`defender lookup failed ${event.defenderKey || '?'}:${event.defenderName || '(unknown)'}`);
   }
-
-  // derive the relation directly from the matches we just looked up (avoids resolveEventRelation()
-  // re-running the same fuzzy lookups for every candidate spread)
-  const relation: EventRelation = attackerMatch.pokemon.calcdexId === candidatePokemon.calcdexId
-    ? 'attacker'
-    : defenderMatch.pokemon.calcdexId === candidatePokemon.calcdexId
-      ? 'defender'
-      : null;
 
   if (!relation) {
     return emptyMatch('candidate relation failed');
@@ -453,35 +735,7 @@ const evaluateCandidateEvent = (
   // the damage rolls for this event are a pure function of the candidate's stats that actually feed
   // the calc (everything else here -- the non-candidate Pokemon, boosts, status, field, crit, hits --
   // is fixed for a given event), so cache them across the coordinate search to skip redundant calculate()s
-  const influence = getMoveInfluence(state, event);
-  const relevantStats = new Set<Showdown.StatName>();
-
-  if (influence.offensiveStat && (
-    (influence.offensivePokemon === 'source' && relation === 'attacker')
-      || (influence.offensivePokemon === 'target' && relation === 'defender')
-  )) {
-    relevantStats.add(influence.offensiveStat);
-  }
-
-  if (influence.defensiveStat && (
-    (influence.defensivePokemon === 'target' && relation === 'defender')
-      || (influence.defensivePokemon === 'source' && relation === 'attacker')
-  )) {
-    relevantStats.add(influence.defensiveStat);
-  }
-
-  // the candidate's HP only changes the rolls when it's the one taking damage in a %-HP battle
-  // (it normalizes the rolls into the same % space as the observed damage)
-  if (state.rules?.hpPercentage && relation === 'defender') {
-    relevantStats.add('hp');
-  }
-
-  if (influence.dependsOnSpeed) {
-    relevantStats.add('spe');
-  }
-
-  const rollKey = `${event.id}:${relation}:${StatNames
-    .filter((stat) => relevantStats.has(stat))
+  const rollKey = `${event.id}:${relation}:${modifierOverride?.id || 'none'}:${relevantStats
     .map((stat) => candidateSpreadStats?.[stat] ?? '')
     .join(',')}`;
 
@@ -490,13 +744,12 @@ const evaluateCandidateEvent = (
   if (!rolls?.length) {
     const attackerPlayer = state[attackerMatch.playerKey];
     const defenderPlayer = state[defenderMatch.playerKey];
-    const eventField = applyEventFieldSnapshot(state.field, event.field);
     const attackerCandidate: CalcdexPokemon = relation === 'attacker' ? {
       ...applyInferencePokemonAssumptions(applyEventPokemonSnapshot(
         state.format,
         candidatePokemon,
         event.attackerSnapshot,
-      ), !event.attackerSnapshot?.abilityConfirmed),
+      ), !event.attackerSnapshot?.abilityConfirmed, modifierOverride),
       nature,
       ivs,
       evs,
@@ -507,18 +760,23 @@ const evaluateCandidateEvent = (
       // move; the live/candidate hitCounter reflects the current battle state, not this historical
       // event, so it must come from the event itself
       hitCounter: event.attackerHitCounter || 0,
+      // same idea for Fury Cutter/Rollout's consecutive-use power scaling & Rollout's Defense Curl combo
+      moveRepeatCount: event.attackerMoveRepeatCount || 0,
+      defenseCurled: !!event.attackerDefenseCurled,
     } : applyInferencePokemonAssumptions(applyEventPokemonSnapshot(state.format, {
       ...attackerMatch.pokemon,
       boosts: cloneBoostSnapshot(event.attackerBoosts),
       status: event.attackerStatus ?? attackerMatch.pokemon.status,
       hitCounter: event.attackerHitCounter || 0,
+      moveRepeatCount: event.attackerMoveRepeatCount || 0,
+      defenseCurled: !!event.attackerDefenseCurled,
     }, event.attackerSnapshot));
     const defenderCandidate: CalcdexPokemon = relation === 'defender' ? {
       ...applyInferencePokemonAssumptions(applyEventPokemonSnapshot(
         state.format,
         candidatePokemon,
         event.defenderSnapshot,
-      ), !event.defenderSnapshot?.abilityConfirmed),
+      ), !event.defenderSnapshot?.abilityConfirmed, modifierOverride),
       nature,
       ivs,
       evs,
@@ -598,7 +856,14 @@ const evaluateCandidateEvent = (
 
       const [move] = moveResult;
 
-      move.hits = event.hits || 1;
+      // Parental Bond hypothesis: @smogon/calc's own Parental Bond mechanic (a real `move.hits === 1`
+      // check in its patched mechanics) computes the correct 100%+25% split distribution ONLY when
+      // `move.hits` is left at the move's natural (un-doubled) value -- forcing it to the REAL
+      // observed hit count (2, from the `-hitcount` line this ability itself causes) would disable
+      // that check and fall back to a naive "2 equal-power hits" calc instead
+      if (modifierOverride?.ability !== ('Parental Bond' as AbilityName)) {
+        move.hits = event.hits || 1;
+      }
 
       const mods: ShowdexCalcMods = {
         hitBasePowers: null,
@@ -624,12 +889,22 @@ const evaluateCandidateEvent = (
   }
 
   const median = medianDamageRoll(rolls);
+  const minRoll = Math.min(...rolls);
   const maxRoll = Math.max(...rolls);
 
   // a KO hit's observed damage is truncated at the defender's remaining HP -- the real roll was AT
   // LEAST the observation -- so score it one-sided (any candidate whose max roll covers the observed
   // HP loss fits perfectly) instead of dragging the search toward matching the truncated value exactly
   const ko = event.endHp === 0;
+
+  // feasibility distance for scoreCandidate(): 0 whenever this spread can actually produce the
+  // observation (in-range), and only positive when it's genuinely unreachable by this spread. This is
+  // what lets the search prefer any spread that keeps every past observation possible over one that's
+  // merely closest-to-median but infeasible for at least one event -- KO stays one-sided since the
+  // truncated observation is only ever a lower bound on the real roll
+  const rangeDistance = ko
+    ? Math.max(0, normalizedObservedDamage - maxRoll)
+    : Math.max(0, minRoll - normalizedObservedDamage, normalizedObservedDamage - maxRoll);
 
   return {
     eventId: event.id,
@@ -640,6 +915,7 @@ const evaluateCandidateEvent = (
     distance: ko
       ? Math.max(0, normalizedObservedDamage - maxRoll)
       : Math.abs(median - normalizedObservedDamage),
+    rangeDistance,
     maxHp: event.maxHp,
     crit: !!event.crit,
     ko,
@@ -647,9 +923,28 @@ const evaluateCandidateEvent = (
     defenderBoosts: cloneBoostSnapshot(event.defenderBoosts),
     attackerStatus: event.attackerStatus || '',
     defenderStatus: event.defenderStatus || '',
-    rollRange: [Math.min(...rolls), maxRoll],
+    rollRange: [minRoll, maxRoll],
   };
 };
+
+// `getPokemonRawStat()`'s `spreadStats`/`serverStats` are pre-item numbers -- when the OTHER mon in a
+// speed comparison is the auth player's own (fully known, not hypothesized) Pokemon, its real item's
+// speed effect must still be applied, or a real Choice Scarf/Iron Ball on OUR side reads as a false
+// speed contradiction on the CANDIDATE and produces a wrong modifier hypothesis (e.g. "Likely: Scarf"
+// on the opponent when the true explanation was our own known Scarf all along)
+const KnownItemSpeedMultiplier: Record<string, number> = {
+  choicescarf: 1.5,
+  ironball: 0.5,
+  ...PokemonSpeedReductionItems.reduce((output, item) => {
+    output[formatId(item)] = 0.5;
+
+    return output;
+  }, {} as Record<string, number>),
+};
+
+const knownItemSpeedMultiplier = (
+  pokemon: CalcdexPokemon,
+): number => KnownItemSpeedMultiplier[formatId(pokemon?.dirtyItem || pokemon?.item)] || 1;
 
 const getPokemonRawStat = (
   pokemon: CalcdexPokemon,
@@ -681,11 +976,16 @@ const applySpeedModifiers = (
   speed: number,
   boosts?: Partial<Showdown.StatsTableNoHp>,
   status?: Showdown.PokemonStatus | '',
+  multiplier?: number,
 ): number => {
   let modified = applyStatBoost(speed, boosts?.spe || 0);
 
   if (status === 'par') {
     modified = Math.floor(modified / 2);
+  }
+
+  if (multiplier) {
+    modified = Math.floor(modified * multiplier);
   }
 
   return modified;
@@ -696,6 +996,106 @@ const hasSpeedModifier = (
   status?: Showdown.PokemonStatus | '',
 ): boolean => !!(boosts?.spe || status === 'par');
 
+interface DamageEventContext {
+  attackerMatch: ReturnType<typeof findPokemonByLogName>;
+  defenderMatch: ReturnType<typeof findPokemonByLogName>;
+  relation: EventRelation;
+  influence: ReturnType<typeof getMoveInfluence>;
+  relevantStats: Showdown.StatName[];
+  eventField: CalcdexBattleField;
+}
+
+interface SpeedEventContext {
+  relation: EventRelation;
+  samePriority: boolean;
+  otherRawSpe: number;
+  otherItemSpeedMultiplier: number;
+}
+
+// everything below is invariant across the entire coordinate-descent search for a given defending
+// Pokemon (the fuzzy roster lookups, move data/dex lookups, and field snapshot never depend on the
+// candidate's nature/IVs/EVs) -- resolved once per event in searchBestCandidates() instead of on
+// every one of the (up to thousands of) per-candidate evaluateCandidateEvent()/
+// evaluateCandidateSpeedEvent() calls
+const resolveDamageEventContext = (
+  state: CalcdexBattleState,
+  event: HackmonsInferenceEvent,
+  candidatePokemon: CalcdexPokemon,
+): DamageEventContext => {
+  const attackerMatch = findPokemonByLogName(state, event.attackerName, event.attackerKey, event.attackerId);
+  const defenderMatch = findPokemonByLogName(state, event.defenderName, event.defenderKey, event.defenderId);
+  const relation: EventRelation = attackerMatch?.pokemon?.calcdexId === candidatePokemon.calcdexId
+    ? 'attacker'
+    : defenderMatch?.pokemon?.calcdexId === candidatePokemon.calcdexId
+      ? 'defender'
+      : null;
+  const influence = getMoveInfluence(state, event);
+  const relevantStats = new Set<Showdown.StatName>();
+
+  if (influence.offensiveStat && (
+    (influence.offensivePokemon === 'source' && relation === 'attacker')
+      || (influence.offensivePokemon === 'target' && relation === 'defender')
+  )) {
+    relevantStats.add(influence.offensiveStat);
+  }
+
+  if (influence.defensiveStat && (
+    (influence.defensivePokemon === 'target' && relation === 'defender')
+      || (influence.defensivePokemon === 'source' && relation === 'attacker')
+  )) {
+    relevantStats.add(influence.defensiveStat);
+  }
+
+  // the candidate's HP only changes the rolls when it's the one taking damage in a %-HP battle
+  // (it normalizes the rolls into the same % space as the observed damage)
+  if (state.rules?.hpPercentage && relation === 'defender') {
+    relevantStats.add('hp');
+  }
+
+  if (influence.dependsOnSpeed) {
+    relevantStats.add('spe');
+  }
+
+  return {
+    attackerMatch,
+    defenderMatch,
+    relation,
+    influence,
+    relevantStats: StatNames.filter((stat) => relevantStats.has(stat)),
+    eventField: applyEventFieldSnapshot(state.field, event.field),
+  };
+};
+
+const resolveSpeedEventContext = (
+  state: CalcdexBattleState,
+  event: HackmonsInferenceEvent,
+  candidatePokemon: CalcdexPokemon,
+): SpeedEventContext => {
+  const fasterMove = getMoveData(state, event);
+  const slowerMove = getGenDexForFormat(state.format)?.moves.get(formatId(event.slowerMoveName) as never) as { priority?: number; };
+  const samePriority = (fasterMove?.priority || 0) === (slowerMove?.priority || 0);
+  const fasterMatch = findPokemonByLogName(state, event.attackerName, event.attackerKey, event.attackerId);
+  const slowerMatch = findPokemonByLogName(state, event.defenderName, event.defenderKey, event.defenderId);
+  const relation: EventRelation = !fasterMatch?.pokemon || !slowerMatch?.pokemon
+    ? null
+    : fasterMatch.pokemon.calcdexId === candidatePokemon.calcdexId
+      ? 'attacker'
+      : slowerMatch.pokemon.calcdexId === candidatePokemon.calcdexId
+        ? 'defender'
+        : null;
+  const otherPokemon = !samePriority || !relation
+    ? null
+    : relation === 'attacker'
+      ? slowerMatch.pokemon
+      : fasterMatch.pokemon;
+  const otherRawSpe = otherPokemon ? getPokemonRawStat(otherPokemon, 'spe') : null;
+  const otherItemSpeedMultiplier = knownItemSpeedMultiplier(otherPokemon);
+
+  return {
+    relation, samePriority, otherRawSpe, otherItemSpeedMultiplier,
+  };
+};
+
 const evaluateCandidateSpeedEvent = (
   state: CalcdexBattleState,
   event: HackmonsInferenceEvent,
@@ -703,19 +1103,14 @@ const evaluateCandidateSpeedEvent = (
   nature: Showdown.PokemonNature,
   ivs: Showdown.StatsTable,
   evs: Showdown.StatsTable,
+  context: SpeedEventContext,
+  modifierOverride?: ModifierOverride,
 ): number => {
-  const fasterMove = getMoveData(state, event);
-  const slowerMove = getGenDexForFormat(state.format)?.moves.get(formatId(event.slowerMoveName) as never) as { priority?: number; };
-
-  if ((fasterMove?.priority || 0) !== (slowerMove?.priority || 0)) {
+  if (!context.samePriority) {
     return 0;
   }
 
-  const fasterMatch = findPokemonByLogName(state, event.attackerName, event.attackerKey, event.attackerId);
-  const slowerMatch = findPokemonByLogName(state, event.defenderName, event.defenderKey, event.defenderId);
-  const relation = resolveEventRelation(state, event, candidatePokemon);
-
-  if (!fasterMatch?.pokemon || !slowerMatch?.pokemon || !relation) {
+  if (!context.relation || !context.otherRawSpe) {
     return 32;
   }
 
@@ -726,20 +1121,22 @@ const evaluateCandidateSpeedEvent = (
     evs,
   });
   const candidateRawSpe = candidateSpreadStats?.spe;
-  const otherRawSpe = relation === 'attacker'
-    ? getPokemonRawStat(slowerMatch.pokemon, 'spe')
-    : getPokemonRawStat(fasterMatch.pokemon, 'spe');
 
-  if (!candidateRawSpe || !otherRawSpe) {
+  if (!candidateRawSpe) {
     return 32;
   }
 
+  const { relation, otherRawSpe, otherItemSpeedMultiplier } = context;
+  // modifierOverride is a HYPOTHESIS applied only to the candidate; the other (known) mon's speed
+  // instead uses its own real, already-revealed item (otherItemSpeedMultiplier) -- ignoring that (as
+  // this used to) makes a real Scarf/Iron Ball on our own side look like a speed contradiction on the
+  // candidate and produces a false modifier hypothesis for them instead
   const candidateSpeed = relation === 'attacker'
-    ? applySpeedModifiers(candidateRawSpe, event.attackerBoosts, event.attackerStatus)
-    : applySpeedModifiers(candidateRawSpe, event.defenderBoosts, event.defenderStatus);
+    ? applySpeedModifiers(candidateRawSpe, event.attackerBoosts, event.attackerStatus, modifierOverride?.speedMultiplier)
+    : applySpeedModifiers(candidateRawSpe, event.defenderBoosts, event.defenderStatus, modifierOverride?.speedMultiplier);
   const otherSpeed = relation === 'attacker'
-    ? applySpeedModifiers(otherRawSpe, event.defenderBoosts, event.defenderStatus)
-    : applySpeedModifiers(otherRawSpe, event.attackerBoosts, event.attackerStatus);
+    ? applySpeedModifiers(otherRawSpe, event.defenderBoosts, event.defenderStatus, otherItemSpeedMultiplier)
+    : applySpeedModifiers(otherRawSpe, event.attackerBoosts, event.attackerStatus, otherItemSpeedMultiplier);
 
   // Showdown breaks exact speed ties by coin flip, so moving first only requires >= (not strictly >)
   // the other mon's speed -- and moving second only requires <=. Treating equality as a violation
@@ -759,24 +1156,34 @@ const scoreCandidate = (
   nature: Showdown.PokemonNature,
   ivs: Showdown.StatsTable,
   evs: Showdown.StatsTable,
+  damageContexts: Map<string, DamageEventContext>,
+  speedContexts: Map<string, SpeedEventContext>,
   rollCache?: Map<string, number[]>,
+  modifierOverride?: ModifierOverride,
 ): number => events.reduce((score, event) => {
   if (event.eventType === 'speed') {
     // speed is a one-sided constraint only: penalize candidates that contradict the observed turn
     // order (too slow when they moved first, too fast when they moved second). We deliberately do NOT
     // center Spe within the feasible range -- with a one-sided bound there is nothing to center on, and
     // doing so fabricates an inflated point estimate. Spe is surfaced as a bound in the UI instead.
-    const boundDistance = evaluateCandidateSpeedEvent(state, event, defender, nature, ivs, evs);
+    const boundDistance = evaluateCandidateSpeedEvent(state, event, defender, nature, ivs, evs, speedContexts.get(event.id), modifierOverride);
     const normalizedDistance = Math.min(32, boundDistance / 4);
 
     return score - (normalizedDistance * normalizedDistance + normalizedDistance);
   }
 
-  const match = evaluateCandidateEvent(state, event, defender, nature, ivs, evs, rollCache);
-  const distance = match?.distance ?? 8;
+  const match = evaluateCandidateEvent(state, event, defender, nature, ivs, evs, damageContexts.get(event.id), rollCache, modifierOverride);
   const weight = event.crit ? 0.25 : 1;
+  const rangeDistance = match?.rangeDistance ?? 8;
+  const rangeCost = rangeDistance * rangeDistance + rangeDistance;
 
-  return score - ((distance * distance + distance) * weight);
+  // median-centering only discriminates *within* an already-feasible range (RangeInfeasibilityWeight
+  // guarantees it can never outweigh a single unit of infeasibility) and is skipped entirely for KO
+  // hits, whose truncated observation isn't a real target to center on
+  const centerDistance = match?.ko ? 0 : (match?.distance ?? 0);
+  const centerCost = centerDistance * centerDistance + centerDistance;
+
+  return score - (((rangeCost * RangeInfeasibilityWeight) + centerCost) * weight);
 }, 0);
 
 const isInRangeMatch = (
@@ -812,6 +1219,762 @@ const outlierDirection = (
   }
 
   return null;
+};
+
+const extremalSpread = (
+  format: string,
+  stats: Showdown.StatName[],
+  direction: 'high' | 'low',
+): { nature: Showdown.PokemonNature; ivs: Showdown.StatsTable; evs: Showdown.StatsTable; } => {
+  const ivs = blankSpread(DefaultIv);
+  const evs = blankSpread(DefaultEv);
+
+  stats.forEach((stat) => {
+    ivs[stat] = direction === 'high' ? 31 : 0;
+    evs[stat] = direction === 'high' ? 252 : 0;
+  });
+
+  if (stats.length !== 1) {
+    return {
+      nature: NeutralNature,
+      ivs,
+      evs,
+    };
+  }
+
+  const [stat] = stats;
+  const nature = PokemonNatures.find((candidateNature) => {
+    const natureData = getGenDexForFormat(format)?.natures.get(formatId(candidateNature) as never) as {
+      plus?: Showdown.StatNameNoHp;
+      minus?: Showdown.StatNameNoHp;
+    };
+
+    return direction === 'high'
+      ? natureData?.plus === stat
+      : natureData?.minus === stat;
+  }) || NeutralNature;
+
+  return { nature, ivs, evs };
+};
+
+const evaluateExtremalFeasibility = (
+  state: CalcdexBattleState,
+  event: HackmonsInferenceEvent,
+  candidatePokemon: CalcdexPokemon,
+  context: DamageEventContext,
+  rollCache?: Map<string, number[]>,
+  modifierOverride?: ModifierOverride,
+): HackmonsExtremalFeasibility => {
+  const stats = context.relevantStats.filter((stat) => stat !== 'hp') as Showdown.StatNameNoHp[];
+
+  if (!stats.length || event.crit || event.eventType === 'speed') {
+    return {};
+  }
+
+  const high = extremalSpread(state.format, stats, 'high');
+  const low = extremalSpread(state.format, stats, 'low');
+  const highMatch = evaluateCandidateEvent(
+    state,
+    event,
+    candidatePokemon,
+    high.nature,
+    high.ivs,
+    high.evs,
+    context,
+    rollCache,
+    modifierOverride,
+  );
+  const lowMatch = evaluateCandidateEvent(
+    state,
+    event,
+    candidatePokemon,
+    low.nature,
+    low.ivs,
+    low.evs,
+    context,
+    rollCache,
+    modifierOverride,
+  );
+
+  return {
+    high: highMatch,
+    low: lowMatch,
+    highInfeasible: outlierDirection(highMatch) === 'too-high',
+    lowInfeasible: !lowMatch?.ko && outlierDirection(lowMatch) === 'too-low',
+  };
+};
+
+interface ModifierTrigger {
+  event: HackmonsInferenceEvent;
+  context: DamageEventContext;
+  outlier: HackmonsDamageOutlier;
+  feasibility: HackmonsExtremalFeasibility;
+}
+
+interface ModifierSearchResult {
+  candidate: SpreadCandidate;
+  matches: HackmonsDamageMatch[];
+  inferredModifier: HackmonsInferredModifier;
+  remainingOutliers: number;
+  score: number;
+}
+
+const candidateAbilityPinned = (
+  events: HackmonsInferenceEvent[],
+  candidatePokemon: CalcdexPokemon,
+  contexts: Map<string, DamageEventContext>,
+): boolean => events.some((event) => {
+  const context = contexts.get(event.id);
+
+  return (
+    (context?.relation === 'attacker' && event.attackerSnapshot?.abilityConfirmed)
+      || (context?.relation === 'defender' && event.defenderSnapshot?.abilityConfirmed)
+  ) && !!candidatePokemon;
+});
+
+const candidateItemPinned = (
+  candidatePokemon: CalcdexPokemon,
+): boolean => !!formatId(candidatePokemon?.item);
+
+// disqualifying evidence (extension, §11): Life Orb's `[from] item: Life Orb` recoil is unconditional
+// on every hit except under Magic Guard/some Sheer Force interactions -- both rare, and abilities are
+// usually unconfirmed in Hackmons, so this can't be a certainty check. If the candidate has ever
+// landed an attacking hit and recoil never once showed up, reject the Life-Orb-shaped hypothesis
+// outright (accepted false-negative risk on the rare exception abilities, documented in the spec)
+const candidateRecoilObserved = (
+  events: HackmonsInferenceEvent[],
+  contexts: Map<string, DamageEventContext>,
+): boolean => events.some((event) => (
+  event.eventType !== 'speed'
+    && contexts.get(event.id)?.relation === 'attacker'
+    && !!event.recoilObserved
+));
+
+// disqualifying evidence (extension, §11): a Choice item locks the holder into repeating the same
+// move until it switches out, so two DISTINCT moves observed while continuously active (same
+// `attackerStint`) prove no Choice item is held, for the rest of the battle -- a per-mon fact, not
+// per-event. V1 only checks DAMAGING moves (no non-damaging move-usage stream is threaded through
+// the parser yet), so a status move used mid-lock isn't caught -- documented limitation.
+const hasChoiceLockViolation = (
+  events: HackmonsInferenceEvent[],
+  contexts: Map<string, DamageEventContext>,
+): boolean => {
+  const movesByStint = new Map<number, Set<string>>();
+
+  events.forEach((event) => {
+    if (event.eventType === 'speed' || contexts.get(event.id)?.relation !== 'attacker') {
+      return;
+    }
+
+    const stint = event.attackerStint ?? 0;
+    const moves = movesByStint.get(stint) || new Set<string>();
+
+    moves.add(formatId(event.moveName));
+    movesByStint.set(stint, moves);
+  });
+
+  return [...movesByStint.values()].some((moves) => moves.size > 1);
+};
+
+const ChoiceModifierIds = new Set(['item-atk-1.5', 'item-spa-1.5', 'item-spe-1.5']);
+
+// shared between the damage-side and speed-side hypothesis searches so an already-adopted modifier
+// on one side (e.g. a damage-side item) isn't also offered as a speed-side item hypothesis -- a mon
+// can only hold one item, though item + ability modifiers can coexist
+const computePinnedSlots = (
+  candidatePokemon: CalcdexPokemon,
+  events: HackmonsInferenceEvent[],
+  contexts: Map<string, DamageEventContext>,
+  additionallyPinned?: HackmonsModifierSlot,
+): Set<'item' | 'ability'> => {
+  const pinned = new Set<'item' | 'ability'>();
+
+  if (candidateItemPinned(candidatePokemon)) {
+    pinned.add('item');
+  }
+
+  if (candidateAbilityPinned(events, candidatePokemon, contexts)) {
+    pinned.add('ability');
+  }
+
+  if (additionallyPinned) {
+    pinned.add(additionallyPinned);
+  }
+
+  return pinned;
+};
+
+const modifierClassesForTrigger = (
+  state: CalcdexBattleState,
+  trigger: ModifierTrigger,
+  pinnedSlots: Set<'item' | 'ability'>,
+): HackmonsModifierClass[] => {
+  const { event, context, outlier } = trigger;
+  const classes = new Set<string>();
+  const add = (id: string) => {
+    const modifier = modifierById(id);
+
+    if (modifier && !pinnedSlots.has(modifier.slot)) {
+      classes.add(modifier.id);
+    }
+  };
+
+  if (context.relation === 'attacker' && outlier === 'too-high') {
+    if (context.influence.offensiveStat === 'atk') {
+      add('ability-atk-2');
+      add('item-atk-1.5');
+      add('item-both-1.3');
+    }
+
+    if (context.influence.offensiveStat === 'spa') {
+      add('item-spa-1.5');
+      add('item-both-1.3');
+    }
+  }
+
+  if (context.relation === 'attacker' && outlier === 'too-low' && context.influence.offensiveStat === 'atk') {
+    add('ability-atk-0.5');
+  }
+
+  if (context.relation === 'defender' && outlier === 'too-low') {
+    if (context.influence.defensiveStat === 'def') {
+      add('ability-def-2');
+    }
+
+    if (context.influence.defensiveStat === 'spd') {
+      add('ability-special-taken-0.5');
+      add('item-spd-1.5');
+    }
+
+    if (event.effectiveness === 'super') {
+      add('ability-se-taken-0.75');
+    }
+
+    if (event.startHp === event.maxHp) {
+      add('ability-full-hp-taken-0.5');
+    }
+
+    if (['Fire', 'Ice'].includes(getMoveData(state, event)?.type)) {
+      add('ability-thickfat-fireice-0.5');
+    }
+  }
+
+  return [...classes].map(modifierById).filter(Boolean);
+};
+
+const collectModifierTriggers = (
+  state: CalcdexBattleState,
+  events: HackmonsInferenceEvent[],
+  candidatePokemon: CalcdexPokemon,
+  matches: HackmonsDamageMatch[],
+  contexts: Map<string, DamageEventContext>,
+  rollCache?: Map<string, number[]>,
+): ModifierTrigger[] => events
+  .filter((event) => event.eventType !== 'speed' && !event.crit)
+  .map((event) => {
+    const match = matches.find((candidateMatch) => candidateMatch?.eventId === event.id);
+    const outlier = outlierDirection(match);
+    const context = contexts.get(event.id);
+
+    if (!outlier || match?.error || !context?.relation) {
+      return null;
+    }
+
+    const feasibility = evaluateExtremalFeasibility(state, event, candidatePokemon, context, rollCache);
+
+    if (
+      (outlier === 'too-high' && !feasibility.highInfeasible)
+        || (outlier === 'too-low' && !feasibility.lowInfeasible)
+    ) {
+      return null;
+    }
+
+    return {
+      event,
+      context,
+      outlier,
+      feasibility,
+    };
+  })
+  .filter(Boolean);
+
+interface JointConflictTrigger {
+  offensiveStat: 'atk' | 'spa';
+  outlierEvents: { event: HackmonsInferenceEvent; context: DamageEventContext; }[];
+  inRangeEvents: { event: HackmonsInferenceEvent; context: DamageEventContext; }[];
+}
+
+// T2 (joint conflict, Group 3's signature): unlike T1, no single event here needs to be
+// extremal-infeasible -- the signature is that the CURRENT best joint candidate already leaves some
+// same-stat, same-relation events outlier-tagged while others of the same stat fit fine (Case C:
+// Thunderbolt too-high, Water Pulse in-range, both ruled by the same SpA)
+const collectJointConflictTriggers = (
+  events: HackmonsInferenceEvent[],
+  matches: HackmonsDamageMatch[],
+  contexts: Map<string, DamageEventContext>,
+): JointConflictTrigger[] => {
+  const byStat = new Map<'atk' | 'spa', { event: HackmonsInferenceEvent; context: DamageEventContext; match: HackmonsDamageMatch; }[]>();
+
+  events
+    .filter((event) => event.eventType !== 'speed' && !event.crit)
+    .forEach((event) => {
+      const context = contexts.get(event.id);
+      const match = matches.find((candidateMatch) => candidateMatch?.eventId === event.id);
+
+      if (
+        context?.relation !== 'attacker'
+          || match?.error
+          || !['atk', 'spa'].includes(context.influence.offensiveStat)
+      ) {
+        return;
+      }
+
+      const stat = context.influence.offensiveStat as 'atk' | 'spa';
+      const list = byStat.get(stat) || [];
+
+      list.push({ event, context, match });
+      byStat.set(stat, list);
+    });
+
+  const triggers: JointConflictTrigger[] = [];
+
+  byStat.forEach((list, offensiveStat) => {
+    const outlierEvents = list
+      .filter(({ match }) => outlierDirection(match) === 'too-high')
+      .map(({ event, context }) => ({ event, context }));
+    const inRangeEvents = list
+      .filter(({ match }) => isInRangeMatch(match))
+      .map(({ event, context }) => ({ event, context }));
+
+    if (outlierEvents.length && inRangeEvents.length) {
+      triggers.push({ offensiveStat, outlierEvents, inRangeEvents });
+    }
+  });
+
+  return triggers;
+};
+
+// scope selection (§5): the boosted subset must share the scope dimension AND the unboosted subset
+// must fall outside it -- Case C's "Electric scope fits, 'special moves' scope doesn't". Global
+// classes are deliberately NOT proposed here (that's T1's job); A2's collateral check downstream is
+// what actually rejects a global hypothesis if one gets proposed by T1 for the same events
+const jointConflictModifierClasses = (
+  state: CalcdexBattleState,
+  candidatePokemon: CalcdexPokemon,
+  trigger: JointConflictTrigger,
+  pinnedSlots: Set<'item' | 'ability'>,
+): HackmonsModifierClass[] => {
+  const classes: HackmonsModifierClass[] = [];
+  const outlierMoveTypes = new Set(trigger.outlierEvents.map(({ event }) => getMoveData(state, event)?.type).filter(Boolean));
+  const inRangeMoveTypes = new Set(trigger.inRangeEvents.map(({ event }) => getMoveData(state, event)?.type).filter(Boolean));
+
+  if (outlierMoveTypes.size === 1) {
+    const [type] = [...outlierMoveTypes];
+
+    if (!inRangeMoveTypes.has(type)) {
+      if (!pinnedSlots.has('item') && TypeBoostItemByType[type]) {
+        classes.push(itemTypeBoostClass(type));
+      }
+
+      if (!pinnedSlots.has('ability') && TypeBoostAbilityByType[type]) {
+        classes.push(abilityTypeBoostClass(type));
+      }
+    }
+  }
+
+  if (!pinnedSlots.has('ability')) {
+    const outlierAllStab = trigger.outlierEvents.every(({ event }) => isEventStabMove(state, event, candidatePokemon));
+    const inRangeNoneStab = trigger.inRangeEvents.every(({ event }) => !isEventStabMove(state, event, candidatePokemon));
+
+    if (outlierAllStab && inRangeNoneStab) {
+      classes.push(AdaptabilityModifier);
+    }
+  }
+
+  return classes;
+};
+
+const ParentalBondModifier: HackmonsModifierClass = {
+  id: 'ability-parental-bond',
+  slot: 'ability',
+  scope: 'extra-hit',
+  multiplier: 1.25,
+  representative: 'Parental Bond',
+  examples: ['Parental Bond'],
+};
+
+// Parental Bond's second hit is 25% power in gen 9; allow for roll variance on BOTH hits
+// independently (each rolls ~85-100% of its own max) rather than requiring an exact 0.25 ratio
+const ParentalBondSecondHitRatioRange: [number, number] = [0.15, 0.35];
+
+interface ParentalBondTrigger {
+  event: HackmonsInferenceEvent;
+  context: DamageEventContext;
+}
+
+// direct hit-shape evidence (extension, §11), independent of outlier magnitude -- Showdown's own log
+// marks Parental Bond's extra hit with a `-hitcount|...|2` line, same as any real dex multi-hit move
+// (Double Kick, Bullet Seed, ...), so `multiHit`/`hits` alone can't distinguish it -- the naive
+// "2 equal-power hits" assumption `evaluateCandidateEvent()` otherwise applies would silently produce
+// a plausible-looking but WRONG (low) Atk/SpA fit with no outlier warning at all. The distinguishing
+// signature is the RATIO: a real 2-hit move's hits are roughly equal, Parental Bond's second is ~25%
+// of the first -- near-impossible for an equal-power move to land by chance.
+const collectParentalBondTriggers = (
+  events: HackmonsInferenceEvent[],
+  contexts: Map<string, DamageEventContext>,
+): ParentalBondTrigger[] => events
+  .filter((event) => (
+    event.eventType !== 'speed'
+      && !event.crit
+      && event.hitDamages?.length === 2
+      && contexts.get(event.id)?.relation === 'attacker'
+  ))
+  .filter((event) => {
+    const [first, second] = event.hitDamages;
+
+    if (!first) {
+      return false;
+    }
+
+    const ratio = second / first;
+
+    return ratio >= ParentalBondSecondHitRatioRange[0] && ratio <= ParentalBondSecondHitRatioRange[1];
+  })
+  .map((event) => ({ event, context: contexts.get(event.id) }));
+
+const parentalBondModifierClasses = (
+  pinnedSlots: Set<'item' | 'ability'>,
+): HackmonsModifierClass[] => (pinnedSlots.has('ability') ? [] : [ParentalBondModifier]);
+
+const evaluatePublishedMatches = (
+  state: CalcdexBattleState,
+  events: HackmonsInferenceEvent[],
+  candidatePokemon: CalcdexPokemon,
+  candidate: SpreadCandidate,
+  contexts: Map<string, DamageEventContext>,
+  rollCache?: Map<string, number[]>,
+  modifierOverride?: ModifierOverride,
+): HackmonsDamageMatch[] => events
+  .filter((event) => event.eventType !== 'speed')
+  .map((event) => {
+    const context = contexts.get(event.id) || resolveDamageEventContext(state, event, candidatePokemon);
+    const match = evaluateCandidateEvent(
+      state,
+      event,
+      candidatePokemon,
+      candidate.nature,
+      candidate.ivs,
+      candidate.evs,
+      context,
+      rollCache,
+      modifierOverride,
+    );
+
+    return { ...match, outlier: outlierDirection(match) };
+  });
+
+const searchModifierHypotheses = (
+  state: CalcdexBattleState,
+  events: HackmonsInferenceEvent[],
+  candidatePokemon: CalcdexPokemon,
+  phaseOneMatches: HackmonsDamageMatch[],
+  phaseOneContexts: Map<string, DamageEventContext>,
+  triggers: ModifierTrigger[],
+  jointConflictTriggers: JointConflictTrigger[],
+  parentalBondTriggers: ParentalBondTrigger[],
+  rollCache?: Map<string, number[]>,
+): { adopted?: ModifierSearchResult; possible: HackmonsInferredModifier[]; } => {
+  if (!triggers.length && !jointConflictTriggers.length && !parentalBondTriggers.length) {
+    return { possible: [] };
+  }
+
+  const pinnedSlots = computePinnedSlots(candidatePokemon, events, phaseOneContexts);
+
+  const hypotheses = new Map<string, HackmonsModifierClass>();
+
+  triggers.forEach((trigger) => {
+    modifierClassesForTrigger(state, trigger, pinnedSlots)
+      .forEach((modifier) => hypotheses.set(modifier.id, modifier));
+  });
+
+  // T2 (Group 3, scoped): scope-selection classes are screened/adopted through the SAME pipeline as
+  // T1's global classes below -- A2's collateral check is what discriminates a correctly-scoped
+  // hypothesis from an incorrectly-global one, not the trigger source
+  jointConflictTriggers.forEach((trigger) => {
+    jointConflictModifierClasses(state, candidatePokemon, trigger, pinnedSlots)
+      .forEach((modifier) => hypotheses.set(modifier.id, modifier));
+  });
+
+  // Parental Bond: direct hit-shape evidence, not outlier-magnitude based -- proposed whenever the
+  // trigger fires at all, independent of whether phase 1 flagged anything as an outlier
+  if (parentalBondTriggers.length) {
+    parentalBondModifierClasses(pinnedSlots)
+      .forEach((modifier) => hypotheses.set(modifier.id, modifier));
+  }
+
+  if (!hypotheses.size) {
+    return { possible: [] };
+  }
+
+  const allTriggers: ModifierTrigger[] = [
+    ...triggers,
+    ...jointConflictTriggers.flatMap((trigger) => trigger.outlierEvents.map(({ event, context }) => ({
+      event,
+      context,
+      outlier: 'too-high' as HackmonsDamageOutlier,
+      feasibility: {} as HackmonsExtremalFeasibility,
+    }))),
+    ...parentalBondTriggers.map(({ event, context }) => ({
+      event,
+      context,
+      outlier: 'too-high' as HackmonsDamageOutlier,
+      feasibility: {} as HackmonsExtremalFeasibility,
+    })),
+  ];
+
+  const phaseOneInRangeIds = new Set(phaseOneMatches.filter(isInRangeMatch).map((match) => match.eventId));
+  const phaseOneOutlierIds = new Set(phaseOneMatches.filter((match) => !!match?.outlier).map((match) => match.eventId));
+  const evaluated: ModifierSearchResult[] = [];
+  const possible: HackmonsInferredModifier[] = [];
+
+  // disqualifying evidence (extension, §11): computed once per mon rather than per-hypothesis, since
+  // both are per-mon facts (not tied to any one event's support)
+  const recoilDisqualifiesLifeOrb = !candidateRecoilObserved(events, phaseOneContexts);
+  const choiceLockDisqualified = hasChoiceLockViolation(events, phaseOneContexts);
+
+  [...hypotheses.values()].forEach((modifier) => {
+    if (
+      (modifier.id === 'item-both-1.3' && recoilDisqualifiesLifeOrb)
+        || (ChoiceModifierIds.has(modifier.id) && choiceLockDisqualified)
+    ) {
+      return;
+    }
+
+    const modifierOverride = modifierOverrideFromClass(modifier);
+    // eslint-disable-next-line no-use-before-define
+    const candidates = searchBestCandidates(state, events, candidatePokemon, rollCache, modifierOverride);
+    const [candidate] = candidates;
+
+    if (!candidate) {
+      return;
+    }
+
+    const matches = evaluatePublishedMatches(
+      state,
+      events,
+      candidatePokemon,
+      candidate,
+      phaseOneContexts,
+      rollCache,
+      modifierOverride,
+    );
+    const supportIds = allTriggers
+      .filter((trigger) => {
+        const match = matches.find((candidateMatch) => candidateMatch?.eventId === trigger.event.id);
+
+        return isInRangeMatch(match);
+      })
+      .map((trigger) => trigger.event.id);
+    const collateral = matches.some((match) => phaseOneInRangeIds.has(match?.eventId) && !!match?.outlier);
+    const remainingOutliers = matches.filter((match) => !!match?.outlier).length;
+    const eliminatedOutliers = [...phaseOneOutlierIds].filter((id) => supportIds.includes(id)).length;
+    const relation = allTriggers.find((trigger) => supportIds.includes(trigger.event.id))?.context.relation || allTriggers[0]?.context.relation;
+    const inferredModifier: HackmonsInferredModifier = {
+      modifier,
+      adopted: false,
+      relation,
+      supportingEventIds: supportIds,
+    };
+
+    // A1 (feasibility-only adoption) assumes outlier-magnitude evidence -- Parental Bond's hit-SHAPE
+    // evidence is direct and doesn't need an outlier to already exist (the shape is proof on its own)
+    const requiresEliminatedOutlier = modifier.id !== 'ability-parental-bond';
+
+    if (!supportIds.length || collateral || (requiresEliminatedOutlier && !eliminatedOutliers)) {
+      return;
+    }
+
+    if (supportIds.length < 2) {
+      possible.push(inferredModifier);
+      return;
+    }
+
+    evaluated.push({
+      candidate: {
+        ...candidate,
+        score: candidate.score - ModifierComplexityPenalty,
+      },
+      matches,
+      inferredModifier: {
+        ...inferredModifier,
+        adopted: true,
+      },
+      remainingOutliers,
+      score: candidate.score - ModifierComplexityPenalty,
+    });
+  });
+
+  const adopted = evaluated
+    .sort((a, b) => (
+      a.remainingOutliers - b.remainingOutliers
+        || b.inferredModifier.supportingEventIds.length - a.inferredModifier.supportingEventIds.length
+        || b.score - a.score
+    ))[0];
+
+  return { adopted, possible: adopted ? [] : possible };
+};
+
+interface SpeedTrigger {
+  // 'faster' -- the candidate is observed outrunning something even its fastest possible spread
+  // couldn't reach (Scarf-class boost); 'slower' -- observed being outrun by something even its
+  // slowest possible spread should have beaten (Iron Ball-class reduction)
+  direction: 'faster' | 'slower';
+  contributingEventIds: string[];
+}
+
+// T3: the tightest speed-order evidence is unsatisfiable at the candidate's own extremal Spe spread
+// -- checked directly against evaluateCandidateSpeedEvent() rather than describeSpeedBound()'s
+// human-readable bound, since that's the same one-sided-violation check the search itself uses
+const collectSpeedTrigger = (
+  state: CalcdexBattleState,
+  events: HackmonsInferenceEvent[],
+  candidatePokemon: CalcdexPokemon,
+  speedContexts: Map<string, SpeedEventContext>,
+): SpeedTrigger | null => {
+  const speedEvents = events.filter((event) => event.eventType === 'speed' && !event.speedOrderSuppressed);
+
+  if (!speedEvents.length) {
+    return null;
+  }
+
+  const high = extremalSpread(state.format, ['spe'], 'high');
+  const low = extremalSpread(state.format, ['spe'], 'low');
+
+  const fasterInfeasible = speedEvents.filter((event) => {
+    const context = speedContexts.get(event.id);
+
+    return context?.relation === 'attacker'
+      && evaluateCandidateSpeedEvent(state, event, candidatePokemon, high.nature, high.ivs, high.evs, context) > 0;
+  });
+
+  if (fasterInfeasible.length) {
+    return { direction: 'faster', contributingEventIds: fasterInfeasible.map((event) => event.id) };
+  }
+
+  const slowerInfeasible = speedEvents.filter((event) => {
+    const context = speedContexts.get(event.id);
+
+    return context?.relation === 'defender'
+      && evaluateCandidateSpeedEvent(state, event, candidatePokemon, low.nature, low.ivs, low.evs, context) > 0;
+  });
+
+  if (slowerInfeasible.length) {
+    return { direction: 'slower', contributingEventIds: slowerInfeasible.map((event) => event.id) };
+  }
+
+  return null;
+};
+
+const speedModifierClassesForTrigger = (
+  trigger: SpeedTrigger,
+  pinnedSlots: Set<'item' | 'ability'>,
+): HackmonsModifierClass[] => (
+  trigger.direction === 'faster' ? ['item-spe-1.5'] : ['item-spe-0.5', 'ability-spe-0.5']
+)
+  .map(modifierById)
+  .filter((modifier) => modifier && !pinnedSlots.has(modifier.slot));
+
+interface SpeedModifierSearchResult {
+  candidate: SpreadCandidate;
+  inferredModifier: HackmonsInferredModifier;
+  score: number;
+}
+
+// mirrors searchModifierHypotheses()'s screen-then-adopt shape (A1-A5), specialized for T3: at most
+// one speed direction can be contradicted at a time, so there's no multi-trigger merge step, just a
+// straight best-of over the 1-2 classes the direction implies
+const searchSpeedModifierHypothesis = (
+  state: CalcdexBattleState,
+  events: HackmonsInferenceEvent[],
+  candidatePokemon: CalcdexPokemon,
+  phaseOneMatches: HackmonsDamageMatch[],
+  damageContexts: Map<string, DamageEventContext>,
+  speedContexts: Map<string, SpeedEventContext>,
+  trigger: SpeedTrigger,
+  pinnedSlots: Set<'item' | 'ability'>,
+  baseOverride: ModifierOverride | undefined,
+  rollCache?: Map<string, number[]>,
+): { adopted?: SpeedModifierSearchResult; possible: HackmonsInferredModifier[]; } => {
+  const classes = speedModifierClassesForTrigger(trigger, pinnedSlots);
+
+  if (!classes.length) {
+    return { possible: [] };
+  }
+
+  const speedEvents = events.filter((event) => event.eventType === 'speed' && !event.speedOrderSuppressed);
+  const phaseOneInRangeIds = new Set(phaseOneMatches.filter(isInRangeMatch).map((match) => match.eventId));
+  const evaluated: SpeedModifierSearchResult[] = [];
+  const possible: HackmonsInferredModifier[] = [];
+  const choiceLockDisqualified = hasChoiceLockViolation(events, damageContexts);
+
+  classes.forEach((modifier) => {
+    if (ChoiceModifierIds.has(modifier.id) && choiceLockDisqualified) {
+      return;
+    }
+
+    const modifierOverride = mergeModifierOverrides(baseOverride, modifierOverrideFromClass(modifier));
+    // eslint-disable-next-line no-use-before-define
+    const [candidate] = searchBestCandidates(state, events, candidatePokemon, rollCache, modifierOverride);
+
+    if (!candidate) {
+      return;
+    }
+
+    // A1/A2: adoption must actually eliminate the contradiction, and must not introduce a NEW
+    // speed-bound violation anywhere else
+    const remainingSpeedViolations = speedEvents.filter((event) => {
+      const context = speedContexts.get(event.id);
+
+      return evaluateCandidateSpeedEvent(state, event, candidatePokemon, candidate.nature, candidate.ivs, candidate.evs, context, modifierOverride) > 0;
+    }).length;
+
+    if (remainingSpeedViolations) {
+      return;
+    }
+
+    // A2 (damage side): a speed-dependent move's (Electro Ball/Gyro Ball) roll range shifts with the
+    // candidate's now-modified Spe -- reject if that pushes a previously in-range damage event out
+    const damageMatches = evaluatePublishedMatches(state, events, candidatePokemon, candidate, damageContexts, rollCache, modifierOverride);
+    const collateral = damageMatches.some((match) => phaseOneInRangeIds.has(match?.eventId) && !!match?.outlier);
+
+    if (collateral) {
+      return;
+    }
+
+    const inferredModifier: HackmonsInferredModifier = {
+      modifier,
+      adopted: false,
+      relation: trigger.direction === 'faster' ? 'attacker' : 'defender',
+      supportingEventIds: trigger.contributingEventIds,
+    };
+
+    // A3: support threshold -- v1 has no speed-side corroboration source, so require >= 2 raw events
+    if (trigger.contributingEventIds.length < 2) {
+      possible.push(inferredModifier);
+      return;
+    }
+
+    evaluated.push({
+      candidate: { ...candidate, score: candidate.score - ModifierComplexityPenalty },
+      inferredModifier: { ...inferredModifier, adopted: true },
+      score: candidate.score - ModifierComplexityPenalty,
+    });
+  });
+
+  // A4: parsimony -- fewest/simplest modifier wins on a tie
+  const adopted = evaluated.sort((a, b) => b.score - a.score)[0];
+
+  return { adopted, possible: adopted ? [] : possible };
 };
 
 const eventSnapshotSignature = (
@@ -868,12 +2031,15 @@ const scoreSpreadCandidate = (
   nature: Showdown.PokemonNature,
   ivs: Showdown.StatsTable,
   evs: Showdown.StatsTable,
+  damageContexts: Map<string, DamageEventContext>,
+  speedContexts: Map<string, SpeedEventContext>,
   rollCache?: Map<string, number[]>,
+  modifierOverride?: ModifierOverride,
 ): SpreadCandidate => ({
   nature,
   ivs: cloneSpread(ivs),
   evs: cloneSpread(evs),
-  score: scoreCandidate(state, events, candidatePokemon, nature, ivs, evs, rollCache),
+  score: scoreCandidate(state, events, candidatePokemon, nature, ivs, evs, damageContexts, speedContexts, rollCache, modifierOverride),
 });
 
 const determineSearchStats = (
@@ -937,26 +2103,51 @@ const selectScoringEvents = (
   return [...selected.values()].sort((a, b) => a.turn - b.turn);
 };
 
-const searchBestCandidates = (
+function searchBestCandidates(
   state: CalcdexBattleState,
   events: HackmonsInferenceEvent[],
   candidatePokemon: CalcdexPokemon,
   rollCache?: Map<string, number[]>,
-): SpreadCandidate[] => {
+  modifierOverride?: ModifierOverride,
+): SpreadCandidate[] {
   const scoringEvents = selectScoringEvents(state, events);
   const searchStats = determineSearchStats(state, scoringEvents, candidatePokemon);
-  const baseIvs = blankSpread(DefaultIv);
-  const baseEvs = blankSpread(DefaultEv);
 
-  let best = scoreSpreadCandidate(
+  // event-level lookups/dex data are invariant across the entire search (only nature/IVs/EVs change
+  // between candidates), so they're resolved once here rather than on every per-candidate
+  // evaluateCandidateEvent()/evaluateCandidateSpeedEvent() call below
+  const damageContexts = new Map<string, DamageEventContext>();
+  const speedContexts = new Map<string, SpeedEventContext>();
+
+  scoringEvents.forEach((event) => {
+    if (event.eventType === 'speed') {
+      speedContexts.set(event.id, resolveSpeedEventContext(state, event, candidatePokemon));
+    } else {
+      damageContexts.set(event.id, resolveDamageEventContext(state, event, candidatePokemon));
+    }
+  });
+
+  const score = (
+    nature: Showdown.PokemonNature,
+    ivs: Showdown.StatsTable,
+    evs: Showdown.StatsTable,
+  ): SpreadCandidate => scoreSpreadCandidate(
     state,
     scoringEvents,
     candidatePokemon,
-    NeutralNature,
-    baseIvs,
-    baseEvs,
+    nature,
+    ivs,
+    evs,
+    damageContexts,
+    speedContexts,
     rollCache,
+    modifierOverride,
   );
+
+  const baseIvs = blankSpread(DefaultIv);
+  const baseEvs = blankSpread(DefaultEv);
+
+  let best = score(NeutralNature, baseIvs, baseEvs);
 
   const seen = new Map<string, SpreadCandidate>();
   let exhausted = false;
@@ -975,15 +2166,7 @@ const searchBestCandidates = (
 
   remember(best);
 
-  PokemonNatures.forEach((nature) => remember(scoreSpreadCandidate(
-    state,
-    scoringEvents,
-    candidatePokemon,
-    nature,
-    best.ivs,
-    best.evs,
-    rollCache,
-  )));
+  PokemonNatures.forEach((nature) => remember(score(nature, best.ivs, best.evs)));
 
   for (let pass = 0; pass < 3 && !exhausted; pass++) {
     for (const stat of searchStats) {
@@ -993,34 +2176,12 @@ const searchBestCandidates = (
             break;
           }
 
-          remember(scoreSpreadCandidate(
-            state,
-            scoringEvents,
-            candidatePokemon,
-            best.nature,
-            {
-              ...best.ivs,
-              [stat]: iv,
-            },
-            {
-              ...best.evs,
-              [stat]: ev,
-            },
-            rollCache,
-          ));
+          remember(score(best.nature, { ...best.ivs, [stat]: iv }, { ...best.evs, [stat]: ev }));
         }
       }
 
       for (const nature of PokemonNatures) {
-        remember(scoreSpreadCandidate(
-          state,
-          scoringEvents,
-          candidatePokemon,
-          nature,
-          best.ivs,
-          best.evs,
-          rollCache,
-        ));
+        remember(score(nature, best.ivs, best.evs));
       }
     }
   }
@@ -1042,21 +2203,7 @@ const searchBestCandidates = (
             break;
           }
 
-          remember(scoreSpreadCandidate(
-            state,
-            scoringEvents,
-            candidatePokemon,
-            refinedBest.nature,
-            {
-              ...refinedBest.ivs,
-              [stat]: iv,
-            },
-            {
-              ...refinedBest.evs,
-              [stat]: ev,
-            },
-            rollCache,
-          ));
+          remember(score(refinedBest.nature, { ...refinedBest.ivs, [stat]: iv }, { ...refinedBest.evs, [stat]: ev }));
         }
       }
 
@@ -1069,7 +2216,7 @@ const searchBestCandidates = (
   }
 
   return [...seen.values()].sort((a, b) => b.score - a.score);
-};
+}
 
 interface SpeedObservation {
   relation: 'attacker' | 'defender';
@@ -1085,6 +2232,7 @@ const describeSpeedBound = (
   state: CalcdexBattleState,
   candidatePokemon: CalcdexPokemon,
   speedEvents: HackmonsInferenceEvent[],
+  adoptedSpeedModifier?: HackmonsModifierClass,
 ): string[] => {
   const observations: SpeedObservation[] = [];
 
@@ -1114,10 +2262,13 @@ const describeSpeedBound = (
     const otherStatus = relation === 'attacker' ? event.defenderStatus : event.attackerStatus;
     const candidateBoosts = relation === 'attacker' ? event.attackerBoosts : event.defenderBoosts;
     const candidateStatus = relation === 'attacker' ? event.attackerStatus : event.defenderStatus;
+    const otherItemSpeedMultiplier = knownItemSpeedMultiplier(otherMatch?.pokemon);
     const otherModifiedSpe = otherRawSpe
-      ? applySpeedModifiers(otherRawSpe, otherBoosts, otherStatus)
+      ? applySpeedModifiers(otherRawSpe, otherBoosts, otherStatus, otherItemSpeedMultiplier)
       : null;
-    const speedLabel = hasSpeedModifier(otherBoosts, otherStatus) || hasSpeedModifier(candidateBoosts, candidateStatus)
+    const speedLabel = hasSpeedModifier(otherBoosts, otherStatus)
+      || hasSpeedModifier(candidateBoosts, candidateStatus)
+      || otherItemSpeedMultiplier !== 1
       ? 'modified Spe'
       : 'Spe';
 
@@ -1143,16 +2294,26 @@ const describeSpeedBound = (
 
   const notes: string[] = [];
 
+  // "raw" here means pre-item/ability -- the modified bound is what was actually observed, the raw
+  // one is what the candidate's true (unmodified) Spe stat must be to produce it
+  const rawAnnotation = (bound: number): string => (
+    adoptedSpeedModifier
+      ? ` (×${adoptedSpeedModifier.multiplier} ${adoptedSpeedModifier.slot} assumed → raw ${adoptedSpeedModifier.multiplier > 1 ? '≥' : '≤'} ${Math.round(bound / adoptedSpeedModifier.multiplier)})`
+      : ''
+  );
+
   if (lowerBounds.length) {
     const tightest = lowerBounds.reduce((best, o) => (o.bound > best.bound ? o : best));
+    const annotation = adoptedSpeedModifier?.multiplier > 1 ? rawAnnotation(tightest.bound) : '';
 
-    notes.push(`Outsped ${tightest.otherName} (${tightest.label} ≥ ${tightest.bound})`);
+    notes.push(`Outsped ${tightest.otherName} (${tightest.label} ≥ ${tightest.bound})${annotation}`);
   }
 
   if (upperBounds.length) {
     const tightest = upperBounds.reduce((best, o) => (o.bound < best.bound ? o : best));
+    const annotation = adoptedSpeedModifier?.multiplier < 1 ? rawAnnotation(tightest.bound) : '';
 
-    notes.push(`Outsped by ${tightest.otherName} (${tightest.label} ≤ ${tightest.bound})`);
+    notes.push(`Outsped by ${tightest.otherName} (${tightest.label} ≤ ${tightest.bound})${annotation}`);
   }
 
   const seenNonNumeric = new Set<string>();
@@ -1272,12 +2433,113 @@ export const inferHackmonsSpread = (
     const rollCache = new Map<string, number[]>();
     const candidates = searchBestCandidates(state, candidateEvents, candidateMatch, rollCache);
 
-    const [best] = candidates;
-    const matches = best ? candidateEvents.filter((event) => event.eventType !== 'speed').map((event) => {
-        const match = evaluateCandidateEvent(state, event, candidateMatch, best.nature, best.ivs, best.evs, rollCache);
+    const damageContexts = new Map<string, DamageEventContext>();
 
-        return { ...match, outlier: outlierDirection(match) };
-      }) : [];
+    candidateEvents
+      .filter((event) => event.eventType !== 'speed')
+      .forEach((event) => damageContexts.set(event.id, resolveDamageEventContext(state, event, candidateMatch)));
+
+    const [phaseOneBest] = candidates;
+    const phaseOneMatches = phaseOneBest ? evaluatePublishedMatches(
+      state,
+      candidateEvents,
+      candidateMatch,
+      phaseOneBest,
+      damageContexts,
+      rollCache,
+    ) : [];
+    const triggers = phaseOneBest && candidateEvents.length
+      ? collectModifierTriggers(state, candidateEvents, candidateMatch, phaseOneMatches, damageContexts, rollCache)
+      : [];
+    const jointConflictTriggers = phaseOneBest && candidateEvents.length
+      ? collectJointConflictTriggers(candidateEvents, phaseOneMatches, damageContexts)
+      : [];
+    const parentalBondTriggers = phaseOneBest && candidateEvents.length
+      ? collectParentalBondTriggers(candidateEvents, damageContexts)
+      : [];
+    const modifierSearch = (triggers.length || jointConflictTriggers.length || parentalBondTriggers.length)
+      ? searchModifierHypotheses(
+        state,
+        candidateEvents,
+        candidateMatch,
+        phaseOneMatches,
+        damageContexts,
+        triggers,
+        jointConflictTriggers,
+        parentalBondTriggers,
+        rollCache,
+      )
+      : { possible: [] };
+    const adoptedModifier = modifierSearch.adopted;
+
+    const speedContexts = new Map<string, SpeedEventContext>();
+
+    candidateEvents
+      .filter((event) => event.eventType === 'speed')
+      .forEach((event) => speedContexts.set(event.id, resolveSpeedEventContext(state, event, candidateMatch)));
+
+    const speedTrigger = collectSpeedTrigger(state, candidateEvents, candidateMatch, speedContexts);
+    const speedPinnedSlots = computePinnedSlots(
+      candidateMatch,
+      candidateEvents,
+      damageContexts,
+      adoptedModifier?.inferredModifier.modifier.slot,
+    );
+    const speedSearch = speedTrigger
+      ? searchSpeedModifierHypothesis(
+        state,
+        candidateEvents,
+        candidateMatch,
+        phaseOneMatches,
+        damageContexts,
+        speedContexts,
+        speedTrigger,
+        speedPinnedSlots,
+        adoptedModifier ? modifierOverrideFromClass(adoptedModifier.inferredModifier.modifier) : undefined,
+        rollCache,
+      )
+      : { possible: [] };
+    const adoptedSpeedModifier = speedSearch.adopted;
+
+    const best = adoptedSpeedModifier?.candidate || adoptedModifier?.candidate || phaseOneBest;
+    const adoptedSupportIds = new Set(adoptedModifier?.inferredModifier.supportingEventIds || []);
+    const inferredModifiers = [
+      ...(adoptedModifier ? [adoptedModifier.inferredModifier] : []),
+      ...(adoptedSpeedModifier ? [adoptedSpeedModifier.inferredModifier] : []),
+      ...modifierSearch.possible,
+      ...speedSearch.possible,
+    ];
+    // a speed modifier changes the candidate's assumed Spe, which can shift a speed-dependent move's
+    // (Electro Ball/Gyro Ball) roll range too -- so matches are recomputed under the combined override
+    // whenever one was adopted, not just reused from the damage-only search
+    const matches = adoptedSpeedModifier
+      ? evaluatePublishedMatches(
+        state,
+        candidateEvents,
+        candidateMatch,
+        best,
+        damageContexts,
+        rollCache,
+        mergeModifierOverrides(
+          adoptedModifier ? modifierOverrideFromClass(adoptedModifier.inferredModifier.modifier) : undefined,
+          modifierOverrideFromClass(adoptedSpeedModifier.inferredModifier.modifier),
+        ),
+      ).map((match) => (
+        adoptedModifier && adoptedSupportIds.has(match.eventId) && isInRangeMatch(match)
+          ? { ...match, outlier: null, explainedBy: adoptedModifier.inferredModifier.modifier.id }
+          : match
+      ))
+      : adoptedModifier
+        ? adoptedModifier.matches.map((match) => (
+          adoptedSupportIds.has(match.eventId) && isInRangeMatch(match)
+            ? {
+              ...match,
+              outlier: null,
+              explainedBy: adoptedModifier.inferredModifier.modifier.id,
+            }
+            : match
+        ))
+        : phaseOneMatches;
     const scoredMatches = matches.filter((match) => !match?.error);
     const inRangeMatches = matches.filter(isInRangeMatch);
     const outlierMatches = matches.filter((match) => !!match?.outlier);
@@ -1298,9 +2560,9 @@ export const inferHackmonsSpread = (
     // events (the plain neutral-nature/default-IV-EV baseline), so this is really just a defensive
     // guard against a malformed score, not a gate on "do we have enough evidence". A mon with zero
     // events publishes that neutral baseline as an honest "nothing observed yet" prior instead of
-    // showing nothing; an event that lands outside the modeled range (e.g. an unmodeled move like
-    // Rollout, or a boosted/reduced hit) is tagged via `outlier` above rather than withholding the
-    // rest of an otherwise-good fit
+    // showing nothing; an event that lands outside the modeled range (e.g. an unmodeled move mechanic,
+    // or a boosted/reduced hit) is tagged via `outlier` above rather than withholding the rest of an
+    // otherwise-good fit
     const shouldPublishEstimate = best && Number.isFinite(best.score);
 
     const publishedEvents = candidateEvents.filter((event) => event.eventType !== 'speed');
@@ -1308,6 +2570,7 @@ export const inferHackmonsSpread = (
       state,
       candidateMatch,
       candidateEvents.filter((event) => event.eventType === 'speed'),
+      adoptedSpeedModifier?.inferredModifier.modifier,
     );
 
     const monInference: HackmonsInferenceState = {
@@ -1332,6 +2595,11 @@ export const inferHackmonsSpread = (
               + 'the modeled range (see per-event outlier tags) -- possibly a boosted/reduced hit or an '
               + 'unmodeled move mechanic, not yet inferred.',
           ] : []),
+          ...(inferredModifiers.map((modifier) => (
+            `${modifier.adopted ? 'Likely' : 'Possible'} hidden ${modifier.modifier.slot}: `
+              + `${formatModifierScope(modifier.modifier.scope)} ×${modifier.modifier.multiplier} `
+              + `(${modifier.modifier.examples.join(' / ')}).`
+          ))),
         ],
       },
       estimate: shouldPublishEstimate ? {
@@ -1343,6 +2611,7 @@ export const inferHackmonsSpread = (
         confidenceRatio: scoredMatches.length ? inRangeMatches.length / scoredMatches.length : 0,
         score: best.score,
         matches,
+        inferredModifiers,
       } : null,
     };
 

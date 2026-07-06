@@ -52,6 +52,8 @@ export const calcMoveBasePower = (
     dirtyBaseStats,
     transformedBaseStats,
     hitCounter: currentHitCounter,
+    moveRepeatCount: currentMoveRepeatCount,
+    defenseCurled,
     faintCounter: currentFaintCounter,
     dirtyFaintCounter,
     moveOverrides,
@@ -114,6 +116,7 @@ export const calcMoveBasePower = (
   const ability = dirtyAbility || revealedAbility;
   // const item = dirtyItem ?? revealedItem;
   const hitCounter = clamp(0, currentHitCounter || 0);
+  const moveRepeatCount = clamp(0, currentMoveRepeatCount || 0);
   const faintCounter = clamp(0, dirtyFaintCounter ?? (currentFaintCounter || 0));
   const volatiles = Object.keys(volatileMap || {});
 
@@ -142,6 +145,23 @@ export const calcMoveBasePower = (
 
   if (move === 'Last Respects' as MoveName && faintCounter > 0) {
     basePower = clamp(0, basePower * (1 + faintCounter), 5050);
+  }
+
+  // both moves double in BP with each consecutive successful use (capped below), resetting whenever a
+  // different move is used, the user misses/is immune, or switches out -- see moveRepeatCount's doc
+  if (move === 'Fury Cutter' as MoveName && moveRepeatCount > 0) {
+    basePower = clamp(0, basePower * (2 ** moveRepeatCount), 160);
+  }
+
+  // Rollout's own doubling stacks with a SEPARATE one-time doubling if Defense Curl was used at any
+  // prior point (hence the `defenseCurled` OR below still applying on its very first, otherwise
+  // un-doubled, use)
+  if (move === 'Rollout' as MoveName && (moveRepeatCount > 0 || defenseCurled)) {
+    basePower = clamp(
+      0,
+      basePower * (2 ** moveRepeatCount) * (defenseCurled ? 2 : 1),
+      defenseCurled ? 960 : 480,
+    );
   }
 
   // Tera Blast becomes 100 BP when Terastallized to the Stellar type

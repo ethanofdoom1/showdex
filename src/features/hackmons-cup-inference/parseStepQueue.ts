@@ -3,7 +3,12 @@ import { PokemonInitialBoosts, PseudoWeatherMap, WeatherMap } from '@showdex/con
 import { type CalcdexPlayerKey } from '@showdex/interfaces/calc';
 import { chunkStepQueueTurns } from '@showdex/utils/battle';
 import { formatId } from '@showdex/utils/core';
-import { type HackmonsInferenceEvent, type HackmonsInferenceFieldSnapshot, type HackmonsInferencePokemonSnapshot } from './types';
+import {
+  type HackmonsDamageEffectiveness,
+  type HackmonsInferenceEvent,
+  type HackmonsInferenceFieldSnapshot,
+  type HackmonsInferencePokemonSnapshot,
+} from './types';
 
 interface PendingMove {
   turn: number;
@@ -17,7 +22,11 @@ interface PendingMove {
   crit?: boolean;
   multiHit?: boolean;
   hits?: number;
+  effectiveness?: HackmonsDamageEffectiveness;
   hitCounter?: number;
+  moveRepeatCount?: number;
+  defenseCurled?: boolean;
+  attackerStint?: number;
 }
 
 interface PendingDamageEvent {
@@ -35,6 +44,9 @@ interface PendingDamageEvent {
   endHp: number;
   maxHp: number;
   totalDamage: number;
+  hitDamages: number[];
+  recoilObserved?: boolean;
+  effectiveness?: HackmonsDamageEffectiveness;
   attackerBoosts: Showdown.StatsTableNoHp;
   defenderBoosts: Showdown.StatsTableNoHp;
   attackerStatus: Showdown.PokemonStatus | '';
@@ -121,6 +133,8 @@ const clonePokemonSnapshot = (
   teraType: snapshot?.teraType || null,
   terastallized: !!snapshot?.terastallized,
   abilityConfirmed: !!snapshot?.abilityConfirmed,
+  itemConfirmed: !!snapshot?.itemConfirmed,
+  revealedItem: snapshot?.revealedItem || null,
 });
 
 const getPokemonSnapshot = (
@@ -163,36 +177,101 @@ const parseHpToken = (token: string): { hp?: number; maxhp?: number; } => {
   };
 };
 
-export const parseHackmonsInferenceEvents = (
-  stepQueue: string[],
-): {
-  events: HackmonsInferenceEvent[];
-  ignoredEventCount: number;
-} => {
-  const chunks = chunkStepQueueTurns(stepQueue);
-  const events: HackmonsInferenceEvent[] = [];
-  let ignoredEventCount = 0;
-  const boostState = new Map<string, Showdown.StatsTableNoHp>();
-  const statusState = new Map<string, Showdown.PokemonStatus | ''>();
-  const hpState = new Map<string, number>();
-  const maxHpState = new Map<string, number>();
-  const pokemonState = new Map<string, HackmonsInferencePokemonSnapshot>();
+interface ChunkMutableState {
+  boostState: Map<string, Showdown.StatsTableNoHp>;
+  statusState: Map<string, Showdown.PokemonStatus | ''>;
+  hpState: Map<string, number>;
+  maxHpState: Map<string, number>;
+  pokemonState: Map<string, HackmonsInferencePokemonSnapshot>;
+  hitCounterState: Map<string, number>;
+  moveRepeatState: Map<string, { moveId: string; count: number; }>;
+  defenseCurlState: Set<string>;
+  activeStintState: Map<string, number>;
+  trickRoomActive: boolean;
+  tailwindState: Set<CalcdexPlayerKey>;
+  fieldState: HackmonsInferenceFieldSnapshot;
+}
 
+const createParserState = (): ChunkMutableState => ({
+  boostState: new Map(),
+  statusState: new Map(),
+  hpState: new Map(),
+  maxHpState: new Map(),
   // times each Pokemon has been directly hit by a damaging move this battle (Rage Fist's power scales
   // off this). Unlike boosts/status, this does NOT reset on switch -- it's a persistent battle stat,
   // matching the real mechanic (and how Last Respects' faintCounter is already treated in this codebase)
-  const hitCounterState = new Map<string, number>();
-  const fieldState: HackmonsInferenceFieldSnapshot = {
+  pokemonState: new Map(),
+  hitCounterState: new Map(),
+  // tracks, per attacker, the move most recently landed & how many consecutive prior turns it landed
+  // in a row -- Fury Cutter/Rollout's power doubles off this. Resets on a different move, a miss/immune,
+  // or a switch-out (see the `move`/`-miss`/`-immune`/`switch` handlers below)
+  moveRepeatState: new Map(),
+  // attackers who've used Defense Curl since their last switch-in -- doubles Rollout's power on top of
+  // moveRepeatState's own scaling, and (unlike moveRepeatState) never resets on a miss/different move
+  defenseCurlState: new Set(),
+  // per-mon count of how many times it's been sent out (bumped on every switch-in) -- two of a mon's
+  // moves sharing a stint but NOT sharing a moveName prove it wasn't Choice-locked during that stint
+  activeStintState: new Map(),
+  trickRoomActive: false,
+  tailwindState: new Set(),
+  fieldState: {
     weather: null,
     terrain: null,
     isMagicRoom: false,
     isWonderRoom: false,
     isGravity: false,
-  };
+  },
+});
 
-  chunks.forEach((steps, chunkIndex) => {
-    const turn = steps.find((step) => step.startsWith('|turn|'))?.split('|')[2];
-    const turnNumber = Number(turn) || chunkIndex;
+// deep enough to isolate a cached snapshot from further mutation -- per-mon boost records are
+// mutated in place elsewhere (`boosts[stat] = ...`), so a shallow Map copy would let live processing
+// after this point corrupt a snapshot that's supposed to stay frozen for the next incremental resume
+const cloneParserState = (
+  state: ChunkMutableState,
+): ChunkMutableState => ({
+  boostState: new Map([...state.boostState].map(([id, boosts]) => [id, cloneBoosts(boosts)])),
+  statusState: new Map(state.statusState),
+  hpState: new Map(state.hpState),
+  maxHpState: new Map(state.maxHpState),
+  pokemonState: new Map([...state.pokemonState].map(([id, snapshot]) => [id, clonePokemonSnapshot(snapshot)])),
+  hitCounterState: new Map(state.hitCounterState),
+  moveRepeatState: new Map([...state.moveRepeatState].map(([id, entry]) => [id, { ...entry }])),
+  defenseCurlState: new Set(state.defenseCurlState),
+  activeStintState: new Map(state.activeStintState),
+  trickRoomActive: state.trickRoomActive,
+  tailwindState: new Set(state.tailwindState),
+  fieldState: cloneFieldSnapshot(state.fieldState),
+});
+
+// processes a single turn-chunk against the running (mutable) parser state, returning just that
+// chunk's events -- factored out of parseHackmonsInferenceEvents() so the incremental resume path
+// below can replay only the chunks that actually need it instead of the whole stepQueue every time
+const processChunk = (
+  steps: string[],
+  turnNumber: number,
+  state: ChunkMutableState,
+): {
+  events: HackmonsInferenceEvent[];
+  ignoredEventCount: number;
+} => {
+  const {
+    boostState,
+    statusState,
+    hpState,
+    maxHpState,
+    pokemonState,
+    hitCounterState,
+    moveRepeatState,
+    defenseCurlState,
+    activeStintState,
+    tailwindState,
+    fieldState,
+  } = state;
+
+  const events: HackmonsInferenceEvent[] = [];
+  let ignoredEventCount = 0;
+
+  {
     const pendingMoves = new Map<string, PendingMove>();
     const moveOrder: PendingMove[] = [];
     const pendingDamageEvents = new Map<string, PendingDamageEvent>();
@@ -220,7 +299,13 @@ export const parseHackmonsInferenceEvents = (
           crit: pendingMove?.crit,
           multiHit: pendingMove?.multiHit,
           hits: pendingMove?.hits,
+          effectiveness: pendingEvent.effectiveness || pendingMove?.effectiveness || 'neutral',
           attackerHitCounter: pendingMove?.hitCounter,
+          attackerMoveRepeatCount: pendingMove?.moveRepeatCount,
+          attackerDefenseCurled: pendingMove?.defenseCurled,
+          attackerStint: pendingMove?.attackerStint,
+          hitDamages: [...pendingEvent.hitDamages],
+          recoilObserved: !!pendingEvent.recoilObserved,
           attackerBoosts: cloneBoosts(pendingEvent.attackerBoosts),
           defenderBoosts: cloneBoosts(pendingEvent.defenderBoosts),
           attackerStatus: pendingEvent.attackerStatus,
@@ -258,6 +343,9 @@ export const parseHackmonsInferenceEvents = (
           defenderName: slowerMove.attackerName,
           moveName: fasterMove.moveName,
           slowerMoveName: slowerMove.moveName,
+          speedOrderSuppressed: state.trickRoomActive
+            || tailwindState.has(fasterMove.attackerKey)
+            || tailwindState.has(slowerMove.attackerKey),
           attackerBoosts: cloneBoosts(fasterMove.boosts),
           defenderBoosts: cloneBoosts(slowerMove.boosts),
           attackerStatus: fasterMove.status,
@@ -285,6 +373,13 @@ export const parseHackmonsInferenceEvents = (
           return;
         }
 
+        const moveId = formatId(moveName);
+        const repeatEntry = moveRepeatState.get(attacker.id);
+
+        if (moveId === 'defensecurl') {
+          defenseCurlState.add(attacker.id);
+        }
+
         pendingMoves.set(attacker.id, {
           turn: turnNumber,
           stepIndex,
@@ -295,6 +390,9 @@ export const parseHackmonsInferenceEvents = (
           boosts: cloneBoosts(getBoosts(boostState, attacker.id)),
           status: getStatus(statusState, attacker.id),
           hitCounter: hitCounterState.get(attacker.id) || 0,
+          moveRepeatCount: repeatEntry?.moveId === moveId ? repeatEntry.count : 0,
+          defenseCurled: defenseCurlState.has(attacker.id),
+          attackerStint: activeStintState.get(attacker.id) || 0,
         });
         moveOrder.push(pendingMoves.get(attacker.id));
 
@@ -310,6 +408,9 @@ export const parseHackmonsInferenceEvents = (
         if (pokemon.id) {
           clearBoosts(boostState, pokemon.id);
           statusState.delete(pokemon.id);
+          moveRepeatState.delete(pokemon.id);
+          defenseCurlState.delete(pokemon.id);
+          activeStintState.set(pokemon.id, (activeStintState.get(pokemon.id) || 0) + 1);
           const snapshot = pokemonState.get(pokemon.id);
 
           if (snapshot) {
@@ -317,9 +418,11 @@ export const parseHackmonsInferenceEvents = (
               teraType: snapshot.teraType || null,
               terastallized: !!snapshot.terastallized,
               typeChanged: false,
-              // once revealed, the ability stays known even after switching out (unlike types, which
-              // do revert to base on switch)
+              // once revealed, the ability/item stay known even after switching out (unlike types,
+              // which do revert to base on switch)
               abilityConfirmed: !!snapshot.abilityConfirmed,
+              itemConfirmed: !!snapshot.itemConfirmed,
+              revealedItem: snapshot.revealedItem || null,
             });
           }
 
@@ -368,6 +471,26 @@ export const parseHackmonsInferenceEvents = (
           fieldState.isGravity = active;
           return;
         }
+
+        if (condition === 'trickroom') {
+          state.trickRoomActive = active;
+          return;
+        }
+      }
+
+      if (type === '-sidestart' || type === '-sideend') {
+        const side = parsePokemonToken(parts[2]);
+        const condition = effectId(parts[3]);
+
+        if (side.playerKey && condition === 'tailwind') {
+          if (type === '-sidestart') {
+            tailwindState.add(side.playerKey);
+          } else {
+            tailwindState.delete(side.playerKey);
+          }
+        }
+
+        return;
       }
 
       if (type === '-terastallize' || type === 'terastallize') {
@@ -438,6 +561,26 @@ export const parseHackmonsInferenceEvents = (
           pokemonState.set(pokemon.id, {
             ...clonePokemonSnapshot(pokemonState.get(pokemon.id)),
             abilityConfirmed: true,
+          });
+        }
+
+        return;
+      }
+
+      // direct item reveals (Group 6 ground truth) -- `-item` (e.g. Frisk/Trick exposing it) and
+      // `-enditem` (consumption/Knock Off) both confirm what the mon WAS holding. Applied forward-only
+      // like `abilityConfirmed` above (events already parsed aren't retroactively updated); a
+      // revealed-then-consumed item incorrectly still reads as held for later events -- known,
+      // documented limitation (spec §2 "item consumption timelines")
+      if (type === '-item' || type === '-enditem') {
+        const pokemon = parsePokemonToken(parts[2]);
+        const item = effectId(parts[3]);
+
+        if (pokemon.id && item) {
+          pokemonState.set(pokemon.id, {
+            ...clonePokemonSnapshot(pokemonState.get(pokemon.id)),
+            itemConfirmed: true,
+            revealedItem: item,
           });
         }
 
@@ -550,7 +693,45 @@ export const parseHackmonsInferenceEvents = (
         return;
       }
 
-      if (!['-damage', '-heal', '-immune', '-miss'].includes(type)) {
+      if (['-supereffective', '-resisted', '-immune'].includes(type)) {
+        const effectiveness = ({
+          '-supereffective': 'super',
+          '-resisted': 'resisted',
+          '-immune': 'immune',
+        } as Record<string, HackmonsDamageEffectiveness>)[type];
+        const lastMove = [...pendingMoves.values()].at(-1);
+
+        if (lastMove?.attackerId) {
+          lastMove.effectiveness = effectiveness;
+
+          const pendingEvent = [...pendingDamageEvents.values()]
+            .reverse()
+            .find((event) => event.attackerId === lastMove.attackerId);
+
+          if (pendingEvent) {
+            pendingEvent.effectiveness = effectiveness;
+          }
+        }
+
+        if (type !== '-immune') {
+          return;
+        }
+      }
+
+      if (type === '-miss' || type === '-immune') {
+        // the move never landed, so whatever repeat-power streak (Fury Cutter/Rollout) it might've
+        // continued is broken -- the next use of any move starts that attacker fresh at count 0
+        const lastMove = [...pendingMoves.values()].at(-1);
+
+        if (lastMove?.attackerId) {
+          moveRepeatState.delete(lastMove.attackerId);
+        }
+
+        ignoredEventCount++;
+        return;
+      }
+
+      if (!['-damage', '-heal'].includes(type)) {
         return;
       }
 
@@ -589,6 +770,30 @@ export const parseHackmonsInferenceEvents = (
           }
         }
 
+        // a `[from] item: X` line where the damaged mon IS the currently pending move's own attacker
+        // is a self-inflicted item effect (Life Orb recoil being the common case) -- both a general
+        // item reveal (Group 6) AND, specifically for Life Orb, the corroborating "recoil observed"
+        // signal the adoption guard checks for. Other `[from] item:` shapes (e.g. Rocky Helmet, whose
+        // item belongs to the OTHER mon) aren't attributed here -- out of scope for this pass.
+        const fromItem = /^\[from\] item:/i.test(from) ? effectId(from) : null;
+        const recoilPendingMove = [...pendingMoves.values()].at(-1);
+
+        if (fromItem && defender.id && recoilPendingMove?.attackerId === defender.id) {
+          pokemonState.set(defender.id, {
+            ...clonePokemonSnapshot(pokemonState.get(defender.id)),
+            itemConfirmed: true,
+            revealedItem: fromItem,
+          });
+
+          const recoilDamageKey = [...pendingDamageEvents.keys()]
+            .reverse()
+            .find((key) => key.startsWith(`${defender.id}:`));
+
+          if (recoilDamageKey) {
+            pendingDamageEvents.get(recoilDamageKey).recoilObserved = true;
+          }
+        }
+
         ignoredEventCount++;
         return;
       }
@@ -616,6 +821,14 @@ export const parseHackmonsInferenceEvents = (
       // move increments it once, since each hit gets its own `-damage` line
       hitCounterState.set(defender.id, (hitCounterState.get(defender.id) || 0) + 1);
 
+      // the move landed, so extend the attacker's repeat-power streak by one for its *next* use --
+      // `pendingMove.moveRepeatCount` is the count already baked into *this* event (read at the `move`
+      // handler, before this hit was known to land)
+      moveRepeatState.set(pendingMove.attackerId, {
+        moveId: formatId(pendingMove.moveName),
+        count: (pendingMove.moveRepeatCount || 0) + 1,
+      });
+
       const damageKey = [
         pendingMove.attackerId,
         defender.id,
@@ -627,6 +840,7 @@ export const parseHackmonsInferenceEvents = (
         pendingDamage.endHp = hp.hp;
         pendingDamage.maxHp = maxHp;
         pendingDamage.totalDamage += damage;
+        pendingDamage.hitDamages.push(damage);
       } else {
         pendingDamageEvents.set(damageKey, {
           turn: turnNumber,
@@ -635,6 +849,7 @@ export const parseHackmonsInferenceEvents = (
           defenderId: defender.id,
           defenderKey: defender.playerKey,
           attackerName: pendingMove.attackerName,
+          hitDamages: [damage],
           defenderName: defender.name,
           moveName: pendingMove.moveName,
           attackerStartHp,
@@ -643,6 +858,7 @@ export const parseHackmonsInferenceEvents = (
           endHp: hp.hp,
           maxHp,
           totalDamage: damage,
+          effectiveness: pendingMove.effectiveness || 'neutral',
           attackerBoosts: cloneBoosts(getBoosts(boostState, pendingMove.attackerId)),
           defenderBoosts: cloneBoosts(getBoosts(boostState, defender.id)),
           attackerStatus: getStatus(statusState, pendingMove.attackerId),
@@ -660,10 +876,116 @@ export const parseHackmonsInferenceEvents = (
 
     flushPendingDamageEvents();
     flushSpeedOrderEvents();
-  });
+  }
 
   return {
     events,
     ignoredEventCount,
+  };
+};
+
+interface ParserCacheEntry {
+  cachedStepQueue: string[];
+  closedChunkCount: number;
+  closedEvents: HackmonsInferenceEvent[];
+  closedIgnoredCount: number;
+  state: ChunkMutableState;
+}
+
+// keyed per battleId, so an unrelated battle's saved walk never gets resumed against this one
+const ParserStateCache = new Map<string, ParserCacheEntry>();
+
+const isStepQueuePrefix = (
+  prefix: string[],
+  full: string[],
+): boolean => {
+  if (full.length < prefix.length) {
+    return false;
+  }
+
+  for (let i = 0; i < prefix.length; i++) {
+    if (full[i] !== prefix[i]) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+export const parseHackmonsInferenceEvents = (
+  stepQueue: string[],
+  battleId?: string,
+): {
+  events: HackmonsInferenceEvent[];
+  ignoredEventCount: number;
+} => {
+  const chunks = chunkStepQueueTurns(stepQueue);
+
+  if (!chunks.length) {
+    return { events: [], ignoredEventCount: 0 };
+  }
+
+  const cached = battleId ? ParserStateCache.get(battleId) : null;
+
+  // a reload/rejoin rebuilds stepQueue from scratch -- if the previously-parsed content isn't a
+  // literal prefix of the new one anymore, the saved walk state is for a different timeline and must
+  // be discarded (full reparse) rather than resumed from
+  const canResume = !!cached && isStepQueuePrefix(cached.cachedStepQueue, stepQueue);
+
+  // the *last* chunk is always treated as still "open" (more steps may get appended to the same turn
+  // before the next `|turn|` line arrives), so only chunks before it are ever trusted as "closed" and
+  // reused verbatim across calls
+  const startIndex = canResume ? Math.min(cached.closedChunkCount, chunks.length - 1) : 0;
+  const runningState = canResume ? cloneParserState(cached.state) : createParserState();
+  const preLoopState = cloneParserState(runningState);
+  const baseClosedEvents = canResume ? cached.closedEvents : [];
+  const baseClosedIgnoredCount = canResume ? cached.closedIgnoredCount : 0;
+
+  const chunkEventLists: HackmonsInferenceEvent[][] = [];
+  const chunkIgnoredCounts: number[] = [];
+  let preLastChunkState = preLoopState;
+
+  for (let i = startIndex; i < chunks.length; i++) {
+    const steps = chunks[i];
+    const turn = steps.find((step) => step.startsWith('|turn|'))?.split('|')[2];
+    const turnNumber = Number(turn) || i;
+    const { events: chunkEvents, ignoredEventCount: chunkIgnoredCount } = processChunk(steps, turnNumber, runningState);
+
+    chunkEventLists.push(chunkEvents);
+    chunkIgnoredCounts.push(chunkIgnoredCount);
+
+    // snapshot state as of right before the (new) last chunk begins, for the next incremental resume
+    if (i === chunks.length - 2) {
+      preLastChunkState = cloneParserState(runningState);
+    }
+  }
+
+  const lastIndex = chunkEventLists.length - 1;
+  const closedEvents = [
+    ...baseClosedEvents,
+    ...chunkEventLists.slice(0, lastIndex).flat(),
+  ];
+  const closedIgnoredCount = baseClosedIgnoredCount
+    + chunkIgnoredCounts.slice(0, lastIndex).reduce((total, count) => total + count, 0);
+  const openEvents = chunkEventLists[lastIndex] || [];
+  const openIgnoredCount = chunkIgnoredCounts[lastIndex] || 0;
+
+  if (battleId) {
+    ParserStateCache.set(battleId, {
+      cachedStepQueue: [...stepQueue],
+      closedChunkCount: chunks.length - 1,
+      closedEvents,
+      closedIgnoredCount,
+      state: preLastChunkState,
+    });
+
+    if (ParserStateCache.size > 16) {
+      ParserStateCache.delete(ParserStateCache.keys().next().value);
+    }
+  }
+
+  return {
+    events: [...closedEvents, ...openEvents],
+    ignoredEventCount: closedIgnoredCount + openIgnoredCount,
   };
 };
