@@ -951,6 +951,32 @@ export interface CalcdexPokemon extends CalcdexLeanPokemon {
   hitCounter?: number;
 
   /**
+   * Number of consecutive prior turns the Pokemon has landed the same move in a row.
+   *
+   * * Used for calculating the base power of repeat-power moves like *Fury Cutter* & *Rollout*, whose
+   *   power doubles with each consecutive successful use.
+   * * Unlike `hitCounter`, this isn't synced from the live client -- Showdown doesn't expose a tracked
+   *   property for it. Currently only populated by the Hackmons Cup spread-inference feature, which
+   *   derives it by walking the battle log's `|move|`/`|-miss|`/`|-immune|` lines itself.
+   *
+   * @default 0
+   * @since 1.3.0
+   */
+  moveRepeatCount?: number;
+
+  /**
+   * Whether the Pokemon has used *Defense Curl* at some prior point while on the field.
+   *
+   * * Doubles *Rollout*'s base power on top of its own consecutive-use scaling (see `moveRepeatCount`).
+   * * Like `moveRepeatCount`, this isn't synced from the live client -- only populated by the Hackmons
+   *   Cup spread-inference feature.
+   *
+   * @default false
+   * @since 1.3.0
+   */
+  defenseCurled?: boolean;
+
+  /**
    * Number of fainted Pokemon on the side that this Pokemon belongs to.
    *
    * * Kept track by the client under the `faintCounter` property in `Showdown.Side`.

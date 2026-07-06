@@ -11,11 +11,27 @@ export interface HackmonsSpreadEstimateProps {
   style?: React.CSSProperties;
 }
 
+// tracks `${battleId}:${calcdexId}` keys whose estimate has already been auto-applied, so the
+// first-load default guess fires exactly once per mon (survives the component remounting on reselect)
+const autoAppliedEstimates = new Set<string>();
+
 const formatSpread = (
   spread: Showdown.StatsTable,
 ): string => PokemonStatNames
   .map((stat) => `${stat.toUpperCase()} ${spread?.[stat] ?? 0}`)
   .join(' / ');
+
+const formatModifierScope = (
+  scope: string | { type?: string; types?: string[]; moveTag?: string; },
+): string => {
+  if (typeof scope !== 'string') {
+    return scope.type || scope.types?.join('/') || scope.moveTag || 'scoped';
+  }
+
+  return scope === 'stab' ? 'STAB' : scope
+    .replace(/^global-/, '')
+    .replace(/-/g, ' ');
+};
 
 export const HackmonsSpreadEstimate = ({
   className,
@@ -36,6 +52,46 @@ export const HackmonsSpreadEstimate = ({
     ? playerKey !== state.authPlayerKey
     : playerKey === state.opponentKey;
 
+  const applyEstimate = () => {
+    if (!estimate) {
+      return;
+    }
+
+    updatePokemon({
+      nature: estimate.nature,
+      ivs: {
+        ...pokemon?.ivs,
+        ...estimate.ivs,
+      },
+      evs: {
+        ...pokemon?.evs,
+        ...estimate.evs,
+      },
+      // hackmons abilities/items are random, so the preset guess (held in dirtyAbility/dirtyItem) is
+      // noise -- clear it so the calc matches the neutral assumption the inference is computed under.
+      // game-revealed values live in ability/item and are left untouched.
+      dirtyAbility: null,
+      dirtyItem: null,
+    }, 'HackmonsSpreadEstimate:Button~Apply:onPress()');
+  };
+
+  // auto-apply the estimate the first time it appears for a given mon (once per battle), so the
+  // default guess populates without the user having to press Apply
+  React.useEffect(() => {
+    if (!isOpponent || !estimate || !pokemonId) {
+      return;
+    }
+
+    const key = `${state.battleId}:${pokemonId}`;
+
+    if (autoAppliedEstimates.has(key)) {
+      return;
+    }
+
+    autoAppliedEstimates.add(key);
+    applyEstimate();
+  }, [estimate, isOpponent, pokemonId, state.battleId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (!isOpponent || !estimate || !pokemon?.speciesForme) {
     return null;
   }
@@ -43,6 +99,7 @@ export const HackmonsSpreadEstimate = ({
   const speedNotes = [...new Set((inference.speedNotes || []).filter(Boolean))];
   const modeledEvents = inference.events.length;
   const outlierEvents = (estimate.matches || []).filter((match) => !!match.outlier).length;
+  const inferredModifiers = estimate.inferredModifiers || [];
   const estimateEvents = JSON.stringify((estimate.matches || []).map((match) => ({
     eventId: match.eventId,
     turn: match.turn,
@@ -53,20 +110,10 @@ export const HackmonsSpreadEstimate = ({
     distance: match.distance,
     error: match.error,
     outlier: match.outlier,
+    explainedBy: match.explainedBy,
     ko: match.ko,
   })));
-
-  const applyEstimate = () => updatePokemon({
-    nature: estimate.nature,
-    ivs: {
-      ...pokemon.ivs,
-      ...estimate.ivs,
-    },
-    evs: {
-      ...pokemon.evs,
-      ...estimate.evs,
-    },
-  }, 'HackmonsSpreadEstimate:Button~Apply:onPress()');
+  const modifierEvents = JSON.stringify(inferredModifiers);
 
   const resetEstimate = () => dispatch(calcdexSlice.actions.resetHackmonsInference({
     battleId: state.battleId,
@@ -81,6 +128,8 @@ export const HackmonsSpreadEstimate = ({
       data-hackmons-match-count={estimate.matches?.length || 0}
       data-hackmons-estimate-events={estimateEvents}
       data-hackmons-speed-notes={JSON.stringify(speedNotes)}
+      data-hackmons-modifiers={modifierEvents}
+      data-hackmons-ignored-count={inference.ignoredEventCount || 0}
     >
       <div className={styles.header}>
         <span className={styles.title}>Estimated Spread</span>
@@ -115,19 +164,32 @@ export const HackmonsSpreadEstimate = ({
         </div>
       )}
 
+      {!!inferredModifiers.length && (
+        <div className={styles.modifiers}>
+          {inferredModifiers.map((modifier) => (
+            <span
+              key={modifier.modifier.id}
+              className={cx(styles.modifier, {
+                [styles.possible]: !modifier.adopted,
+              })}
+            >
+              {modifier.adopted ? 'Likely' : 'Possible'}
+              {`: ${formatModifierScope(modifier.modifier.scope)} ×${modifier.modifier.multiplier} ${modifier.modifier.slot}`}
+              {` (${modifier.modifier.representative})`}
+            </span>
+          ))}
+        </div>
+      )}
+
       <div className={styles.meta}>
         {modeledEvents} modeled damage event{modeledEvents === 1 ? '' : 's'}
         {outlierEvents ? `, ${outlierEvents} outlier${outlierEvents === 1 ? '' : 's'}` : ''}
         {inference.ignoredEventCount ? `, ${inference.ignoredEventCount} unsupported ignored` : ''}
       </div>
 
-      {/*
-        TEMPORARY: manual-testing aid for reviewing per-event matches directly in a real battle
-        (rather than only via the e2e debug script). Ask to remove this block once done reviewing.
-      */}
       {!!estimate.matches?.length && (
         <div className={styles.debug}>
-          <span className={styles.label}>Debug: Per-Event Matches (temporary)</span>
+          <span className={styles.label}>Debug: Per-Event Matches</span>
           <div className={styles.debugMatches}>
             {estimate.matches.map((match) => (
               <div
@@ -142,6 +204,7 @@ export const HackmonsSpreadEstimate = ({
                 {typeof match.medianDamage === 'number' ? ` | median ${match.medianDamage}%` : ''}
                 {typeof match.distance === 'number' ? ` | Δ${match.distance}` : ''}
                 {match.ko ? ' | KO (obs truncated)' : ''}
+                {match.explainedBy ? ` | explained by ${match.explainedBy}` : ''}
                 {match.outlier ? ` | ${match.outlier.toUpperCase()}` : ''}
                 {match.error ? ` | ERROR: ${match.error}` : ''}
               </div>

@@ -7,7 +7,7 @@ export const syncHackmonsInference = (
   state: CalcdexBattleState,
   stepQueue: string[],
 ): HackmonsInferenceMap => {
-  const parsed = parseHackmonsInferenceEvents(stepQueue);
+  const parsed = parseHackmonsInferenceEvents(stepQueue, state.battleId);
 
   return inferHackmonsSpread(state, parsed.events, parsed.ignoredEventCount);
 };
