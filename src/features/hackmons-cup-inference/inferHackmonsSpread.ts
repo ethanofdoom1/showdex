@@ -49,6 +49,15 @@ const CacheVersion = 'bounded-search-v23';
 const InferenceCache = new Map<string, HackmonsInferenceState>();
 const SpeedDependentMoves = new Set(['electroball', 'gyroball']);
 
+// perf audit remedy #4: rolls survive across syncs (unlike `rollCache` itself, which is local to one
+// inferHackmonsSpread() call) since an old event's roll doesn't change just because a new event
+// appended -- keyed per `calcdexId` + `participantSignature` (NOT the event signature, which is the
+// whole point) so a reveal still starts a fresh roll cache instead of reusing rolls computed against a
+// stale non-candidate ability/item, same poisoned-cache hazard `participantSignature` already guards
+// against for `InferenceCache` above
+const RollCacheStore = new Map<string, Map<string, number[]>>();
+const MaxRollCacheEntriesPerMon = 20_000;
+
 // out-of-range distance must always dominate median-centering distance in scoreCandidate() -- a
 // single unit of infeasibility (an observation the candidate can't produce at all) has to outweigh
 // any possible in-range centering difference, or a "closer to median but impossible" spread could
@@ -1110,6 +1119,12 @@ const evaluateCandidateEvent = (
     }
 
     rollCache?.set(rollKey, rolls);
+
+    // now-persistent across syncs (perf audit remedy #4) -- bound an individual mon's growth over a
+    // very long battle the same way RollCacheStore bounds the number of mons tracked
+    if (rollCache && rollCache.size > MaxRollCacheEntriesPerMon) {
+      rollCache.delete(rollCache.keys().next().value);
+    }
   }
 
   const median = medianDamageRoll(rolls);
@@ -2584,7 +2599,12 @@ function searchBestCandidates(
   modifierOverride?: ModifierOverride,
   // warm-start: seed the descent from a nearby known-good candidate (e.g. phase 1's winner) instead of
   // the blank neutral spread -- every pass still sweeps the full IV/EV/nature grid per stat (see below),
-  // so this only changes the starting point of an otherwise-unchanged exhaustive search, not its breadth
+  // so this only changes the starting point of an otherwise-unchanged exhaustive search, not its breadth.
+  // Perf audit remedy #2 (dropping to 1 coarse pass when seeded) was tried and reverted: the `hustle`
+  // scenario converged to a different, wrong hypothesis (`item-atk-1.1` over the intended
+  // `ability-atk-1.5`) with only 1 pass, so a modifier's true optimum isn't reliably a local
+  // perturbation of phase 1's winner -- this remedy needs a correctness-preserving redesign (e.g. an
+  // event-affectedness check backed by @smogon/calc itself, not a pass-count guess) before it's safe.
   seed?: SpreadCandidate,
 ): SpreadCandidate[] {
   const endTimer = runtimer(lSearchCandidates.scope, lSearchCandidates);
@@ -2914,9 +2934,19 @@ export const inferHackmonsSpread = (
 
     const endMonTimer = runtimer(l.scope, l);
 
-    // damage rolls are memoized for the duration of this one mon's search (and reused below for the
-    // winning candidate's published matches), keyed on the candidate stats that feed each calc
-    const rollCache = new Map<string, number[]>();
+    // damage rolls are memoized across this mon's ENTIRE search (phase 1 + every modifier hypothesis)
+    // and persisted across syncs too (perf audit remedy #4) -- keyed on the candidate stats that feed
+    // each calc, so an old event's roll is reused as long as the participants (and thus their real
+    // ability/item) haven't changed since it was cached; see RollCacheStore above
+    const rollCacheKey = [state.battleId, calcdexId, participantSignature].join('|');
+    const rollCache = RollCacheStore.get(rollCacheKey) || new Map<string, number[]>();
+
+    RollCacheStore.set(rollCacheKey, rollCache);
+
+    if (RollCacheStore.size > 64) {
+      RollCacheStore.delete(RollCacheStore.keys().next().value);
+    }
+
     const candidates = searchBestCandidates(state, candidateEvents, candidateMatch, rollCache);
 
     const damageContexts = new Map<string, DamageEventContext>();
