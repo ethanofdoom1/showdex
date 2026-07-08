@@ -96,9 +96,15 @@
   opacity: 0.72;
 }
 
-// TEMPORARY: debug view of per-event matches for manual testing; remove once the reviewer is done
+// permanent, collapsed-by-default manual-testing aid; the e2e harness reads matches via the
+// `data-hackmons-*` attrs on the section regardless of expanded state
 .debug {
   @include spacing.margin($top: 6px);
+
+  .label {
+    cursor: pointer;
+    user-select: none;
+  }
 }
 
 .debugMatches {

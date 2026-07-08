@@ -44,6 +44,7 @@ export const HackmonsSpreadEstimate = ({
     updatePokemon,
   } = useCalcdexPokeContext();
   const dispatch = useDispatch();
+  const [debugExpanded, setDebugExpanded] = React.useState(false);
 
   const pokemonId = pokemon?.calcdexId;
   const inference = pokemonId ? state.hackmonsInference?.[pokemonId] : null;
@@ -189,27 +190,38 @@ export const HackmonsSpreadEstimate = ({
 
       {!!estimate.matches?.length && (
         <div className={styles.debug}>
-          <span className={styles.label}>Debug: Per-Event Matches</span>
-          <div className={styles.debugMatches}>
-            {estimate.matches.map((match) => (
-              <div
-                key={match.eventId}
-                className={cx(styles.debugMatchRow, {
-                  [styles.outlier]: !!match.outlier,
-                  [styles.error]: !!match.error,
-                })}
-              >
-                {`T${match.turn} ${match.moveName}: obs ${match.observedDamage}%`}
-                {match.rollRange ? ` | modeled ${match.rollRange[0]}-${match.rollRange[1]}%` : ''}
-                {typeof match.medianDamage === 'number' ? ` | median ${match.medianDamage}%` : ''}
-                {typeof match.distance === 'number' ? ` | Δ${match.distance}` : ''}
-                {match.ko ? ' | KO (obs truncated)' : ''}
-                {match.explainedBy ? ` | explained by ${match.explainedBy}` : ''}
-                {match.outlier ? ` | ${match.outlier.toUpperCase()}` : ''}
-                {match.error ? ` | ERROR: ${match.error}` : ''}
-              </div>
-            ))}
-          </div>
+          <span
+            className={styles.label}
+            role="button"
+            tabIndex={0}
+            onClick={() => setDebugExpanded(!debugExpanded)}
+            onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && setDebugExpanded(!debugExpanded)}
+          >
+            {debugExpanded ? '▾' : '▸'}
+            {' Debug: Per-Event Matches'}
+          </span>
+          {debugExpanded && (
+            <div className={styles.debugMatches}>
+              {estimate.matches.map((match) => (
+                <div
+                  key={match.eventId}
+                  className={cx(styles.debugMatchRow, {
+                    [styles.outlier]: !!match.outlier,
+                    [styles.error]: !!match.error,
+                  })}
+                >
+                  {`T${match.turn} ${match.moveName}: obs ${match.observedDamage}%`}
+                  {match.rollRange ? ` | modeled ${match.rollRange[0]}-${match.rollRange[1]}%` : ''}
+                  {typeof match.medianDamage === 'number' ? ` | median ${match.medianDamage}%` : ''}
+                  {typeof match.distance === 'number' ? ` | Δ${match.distance}` : ''}
+                  {match.ko ? ' | KO (obs truncated)' : ''}
+                  {match.explainedBy ? ` | explained by ${match.explainedBy}` : ''}
+                  {match.outlier ? ` | ${match.outlier.toUpperCase()}` : ''}
+                  {match.error ? ` | ERROR: ${match.error}` : ''}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

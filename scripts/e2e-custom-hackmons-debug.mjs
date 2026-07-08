@@ -384,6 +384,29 @@ const scenarios = {
     ],
   },
 
+  // Catalog audit (2026-07-06, §12 A1 fix): opponent Mew has a HIDDEN Hustle (Atk x1.5 ABILITY, not
+  // an item -- unlike Choice Band, Hustle does NOT lock the holder into one move) and alternates TWO
+  // DIFFERENT attacking moves without ever switching out, same choice-lock-violation shape as
+  // `choicelock`. Before the A1 fix, Hustle/Gorilla Tactics were wrongly bucketed under the item-slot
+  // `item-atk-1.5` class, so this exact evidence pattern would reject the only x1.5-Atk hypothesis
+  // outright and leave the outlier unexplained. Atk investment (100 EV / 0 IV / neutral nature, true
+  // Atk ~230) is deliberately tuned into the narrow band where x1.5's output clears the neutral-max
+  // ceiling (~329) but stays under x2's OWN floor-Atk minimum (~368 at 0 EV/IV) -- so Huge Power (x2)
+  // can never ALSO explain the same evidence, isolating the choice-lock-vs-slot fix this scenario is
+  // meant to prove.
+  hustle: {
+    teams: {
+      a: teamA('252 HP / 252 Def', 'Bold', ['Recover']),
+      b: teamB('252 HP / 100 Atk / 4 Def', 'Serious', ['Body Slam', 'Crunch', 'Recover'], { ability: 'Hustle', ivs: '0 Atk' }),
+    },
+    plannedTurns: [
+      { a: 'Recover', b: 'Body Slam' },
+      { a: 'Recover', b: 'Crunch' },
+      { a: 'Recover', b: 'Body Slam' },
+      { a: 'Recover', b: 'Crunch' },
+    ],
+  },
+
   // G7 (Slice D.5): Thick Fat -- opponent Mew has (hidden) Thick Fat and takes a Fire move + a
   // neutral-type move from Vaporeon, both special (same defensiveStat bucket so both get scored).
   // Mew's SpD is maxed to searchBestCandidates()'s own ceiling (same "zero headroom" trick as
@@ -481,6 +504,28 @@ const scenarios = {
       { a: 'Recover', b: 'Water Pulse' },
       { a: 'Recover', b: 'Thunderbolt' },
       { a: 'Recover', b: 'Water Pulse' },
+    ],
+  },
+
+  // G4 (Slice E): T4 (effectiveness contradiction) -> opponent Mew has (hidden) Pixilate and uses
+  // Body Slam (naturally Normal-type) against Kyurem, a real Dragon/Ice-type defender. Normal is
+  // neutral against Dragon/Ice, but Pixilate retypes Body Slam to Fairy (x1.2 boost, via
+  // @smogon/calc's own ability mechanic) -- Fairy is x2 super-effective against pure Dragon, so every
+  // hit logs `|-supereffective|`, directly contradicting the move's natural (Normal) type. Kyurem is
+  // chosen deliberately over a plain single Dragon-type: Ice (Refrigerate) is ALSO x2 vs pure Dragon,
+  // which would leave the changed type genuinely ambiguous (spec: "report the set") -- but Ice resists
+  // itself, so against Dragon/Ice specifically only Fairy (Pixilate) stays super-effective, while Ice
+  // (Refrigerate), Flying (Aerilate), and Electric (Galvanize) all come out neutral/resisted instead,
+  // uniquely disambiguating to Pixilate. Kyurem only Recovers (deals no damage back).
+  pixilate: {
+    teams: {
+      a: customSpeciesTeam('A', 'Kyurem', '252 HP / 252 Def', 'Bold', ['Recover']),
+      b: teamB('252 HP / 252 Atk / 4 Def', 'Adamant', ['Body Slam', 'Recover'], { ability: 'Pixilate' }),
+    },
+    plannedTurns: [
+      { a: 'Recover', b: 'Body Slam' },
+      { a: 'Recover', b: 'Body Slam' },
+      { a: 'Recover', b: 'Body Slam' },
     ],
   },
 
