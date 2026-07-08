@@ -25,6 +25,7 @@ export type HackmonsModifierScope =
   | 'global-spd'
   | 'global-both'
   | 'super-effective-taken'
+  | 'resisted-dealt'
   | 'full-hp-taken'
   | 'stab'
   | 'extra-hit'
@@ -40,6 +41,35 @@ export interface HackmonsModifierClass {
   multiplier: number;
   representative: string;
   examples: string[];
+
+  /**
+   * Whether this class's supporting evidence is direct (hit-shape, effectiveness contradiction, ...)
+   * rather than magnitude-outlier based -- bypasses `searchModifierHypotheses()`'s "requires an
+   * eliminated outlier" adoption gate the same way Parental Bond and the -ate/Normalize classes do.
+   *
+   * @since 1.3.0
+   */
+  directEvidence?: boolean;
+
+  /**
+   * Id of another `ModifierCatalog` class whose trigger corroborates this one (e.g. Slow Start's Atk
+   * half and Spe half are the same ability, but live in separate damage/speed searches that would
+   * otherwise pin each other out of the ability slot). When both fire together, they co-adopt instead
+   * of competing.
+   *
+   * @since 1.3.0
+   */
+  pairedClassId?: string;
+
+  /**
+   * Per-mon disqualifying evidence (extension, spec §11) that rules this class out outright
+   * regardless of outlier support -- `'choice-lock'` (two distinct moves used without switching,
+   * proving no Choice item) and `'no-recoil'` (Life Orb's unconditional recoil line never observed on
+   * a supporting hit).
+   *
+   * @since 1.3.0
+   */
+  disqualifiers?: ('choice-lock' | 'no-recoil')[];
 }
 
 export interface HackmonsInferredModifier {

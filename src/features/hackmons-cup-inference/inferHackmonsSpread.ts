@@ -18,6 +18,7 @@ import {
   createSmogonPokemon,
 } from '@showdex/utils/calc';
 import { formatId } from '@showdex/utils/core';
+import { logger, runtimer } from '@showdex/utils/debug';
 import { getGenDexForFormat } from '@showdex/utils/dex';
 import {
   type HackmonsDamageMatch,
@@ -55,6 +56,10 @@ const SpeedDependentMoves = new Set(['electroball', 'gyroball']);
 const RangeInfeasibilityWeight = 1e6;
 const ModifierComplexityPenalty = 6 * RangeInfeasibilityWeight;
 
+const l = logger('@showdex/features/hackmons-cup-inference/inferHackmonsSpread()');
+const lSearchCandidates = logger('@showdex/features/hackmons-cup-inference/inferHackmonsSpread():searchBestCandidates()');
+const lSearchModifiers = logger('@showdex/features/hackmons-cup-inference/inferHackmonsSpread():searchModifierHypotheses()');
+
 interface ModifierOverride {
   id: string;
   item?: ItemName;
@@ -72,12 +77,37 @@ const ModifierCatalog: HackmonsModifierClass[] = [
     examples: ['Huge Power', 'Pure Power'],
   },
   {
+    // audit fix A1: split from the old bundled 'item-atk-1.5' (Choice Band + Gorilla Tactics +
+    // Hustle) -- Choice Band is a real Choice item (locks, disqualifiable by a lock violation);
+    // Gorilla Tactics/Hustle are abilities that don't share that disqualifier (see ability-atk-1.5
+    // below). Bundling them under slot 'item' let an item reveal or a lock violation wrongly
+    // eliminate the ability-side explanations too.
     id: 'item-atk-1.5',
     slot: 'item',
     scope: 'global-atk',
     multiplier: 1.5,
     representative: 'Choice Band',
-    examples: ['Choice Band', 'Gorilla Tactics', 'Hustle'],
+    examples: ['Choice Band'],
+    disqualifiers: ['choice-lock'],
+  },
+  {
+    // Gorilla Tactics locks like a Choice item; Hustle doesn't. A lock violation can't distinguish
+    // the two, so (unlike the item-slot class above) this class carries no disqualifier -- accepted
+    // imprecision, per audit finding A1.
+    id: 'ability-atk-1.5',
+    slot: 'ability',
+    scope: 'global-atk',
+    multiplier: 1.5,
+    representative: 'Gorilla Tactics',
+    examples: ['Gorilla Tactics', 'Hustle'],
+  },
+  {
+    id: 'item-atk-1.1',
+    slot: 'item',
+    scope: 'global-atk',
+    multiplier: 1.1,
+    representative: 'Muscle Band',
+    examples: ['Muscle Band'],
   },
   {
     id: 'item-spa-1.5',
@@ -86,6 +116,15 @@ const ModifierCatalog: HackmonsModifierClass[] = [
     multiplier: 1.5,
     representative: 'Choice Specs',
     examples: ['Choice Specs'],
+    disqualifiers: ['choice-lock'],
+  },
+  {
+    id: 'item-spa-1.1',
+    slot: 'item',
+    scope: 'global-spa',
+    multiplier: 1.1,
+    representative: 'Wise Glasses',
+    examples: ['Wise Glasses'],
   },
   {
     id: 'item-both-1.3',
@@ -94,6 +133,7 @@ const ModifierCatalog: HackmonsModifierClass[] = [
     multiplier: 1.3,
     representative: 'Life Orb',
     examples: ['Life Orb'],
+    disqualifiers: ['no-recoil'],
   },
   {
     id: 'ability-atk-0.5',
@@ -102,6 +142,11 @@ const ModifierCatalog: HackmonsModifierClass[] = [
     multiplier: 0.5,
     representative: 'Slow Start',
     examples: ['Slow Start'],
+    // audit fix A2: Slow Start's Atk half and Spe half are the SAME ability but live in separate
+    // damage/speed searches -- without this link, adopting one pins the ability slot and permanently
+    // blocks the other from ever co-adopting, even though observing both is the strongest possible
+    // signature. See the `additionallyPinned` computation in inferHackmonsSpread().
+    pairedClassId: 'ability-spe-0.5',
   },
   {
     id: 'ability-def-2',
@@ -152,12 +197,83 @@ const ModifierCatalog: HackmonsModifierClass[] = [
     examples: ['Thick Fat'],
   },
   {
+    // Heatproof and Water Bubble's defensive half are damage-indistinguishable (both Fire ×0.5
+    // taken) -- merged into one class, same policy as Filter/Solid Rock/Prism Armor above. NOT
+    // merged with Purifying Salt below: that's a different type (Ghost), not a shape match.
+    id: 'ability-heatproof-fire-taken-0.5',
+    slot: 'ability',
+    scope: { type: 'Fire' },
+    multiplier: 0.5,
+    representative: 'Heatproof',
+    examples: ['Heatproof', 'Water Bubble'],
+  },
+  {
+    id: 'ability-purifyingsalt-ghost-taken-0.5',
+    slot: 'ability',
+    scope: { type: 'Ghost' },
+    multiplier: 0.5,
+    representative: 'Purifying Salt',
+    examples: ['Purifying Salt'],
+  },
+  {
+    // `too-high` twin (spec §4 Group 2's last row, cataloged since the original slice but never
+    // implemented until this audit): the candidate as DEFENDER takes MORE than max roll from a Fire
+    // hit. Separate class from Dry Skin below -- different multiplier, not damage-indistinguishable.
+    id: 'ability-fluffy-fire-taken-2',
+    slot: 'ability',
+    scope: { type: 'Fire' },
+    multiplier: 2,
+    representative: 'Fluffy',
+    examples: ['Fluffy'],
+  },
+  {
+    id: 'ability-dryskin-fire-taken-1.25',
+    slot: 'ability',
+    scope: { type: 'Fire' },
+    multiplier: 1.25,
+    representative: 'Dry Skin',
+    examples: ['Dry Skin'],
+  },
+  {
+    // offensive half of Water Bubble -- a second multiplier tier alongside the ×1.3/×1.5
+    // type-boost-ability template below (that template is parameterized per-type at one multiplier
+    // each; ×2 needs its own entry rather than a third generated tier for a single type)
+    id: 'ability-waterbubble-water-dealt-2',
+    slot: 'ability',
+    scope: { type: 'Water' },
+    multiplier: 2,
+    representative: 'Water Bubble',
+    examples: ['Water Bubble'],
+  },
+  {
+    // attacker-side mirror of Filter/Solid Rock's defender-side 'super-effective-taken' scope --
+    // cheaper than the deferred Expert Belt (spec §4 Group 3) since effectiveness is already parsed
+    id: 'ability-tintedlens-resisted-dealt-2',
+    slot: 'ability',
+    scope: 'resisted-dealt',
+    multiplier: 2,
+    representative: 'Tinted Lens',
+    examples: ['Tinted Lens'],
+  },
+  {
+    // first species-conditional class: proposeWhen (see ModifierProposalRules) reads
+    // `dex.species.get(...).nfe`, the same dex-accessor pattern used throughout this file rather
+    // than hand-rolling an NFE species list
+    id: 'item-eviolite-defspd-1.5',
+    slot: 'item',
+    scope: 'global-both',
+    multiplier: 1.5,
+    representative: 'Eviolite',
+    examples: ['Eviolite'],
+  },
+  {
     id: 'item-spe-1.5',
     slot: 'item',
     scope: 'spe',
     multiplier: 1.5,
     representative: 'Choice Scarf',
     examples: ['Choice Scarf'],
+    disqualifiers: ['choice-lock'],
   },
   {
     id: 'item-spe-0.5',
@@ -174,6 +290,7 @@ const ModifierCatalog: HackmonsModifierClass[] = [
     multiplier: 0.5,
     representative: 'Slow Start',
     examples: ['Slow Start'],
+    pairedClassId: 'ability-atk-0.5',
   },
 ];
 
@@ -214,6 +331,17 @@ const TypeBoostAbilityByType: Partial<Record<Showdown.TypeName, AbilityName>> = 
   Dragon: 'Dragon\'s Maw',
 } as Partial<Record<Showdown.TypeName, AbilityName>>;
 
+// audit fix A3: Transistor was nerfed from x1.5 to x1.3 in gen 9 (SV) -- the generator previously
+// hardcoded x1.5 for every type, mislabeling the Electric entry's class id/multiplier even though the
+// damage math itself was correct (the calc applies the real 'Transistor' ability, not this constant).
+const TypeBoostAbilityMultiplierByType: Partial<Record<Showdown.TypeName, number>> = {
+  Electric: 1.3,
+};
+
+const TypeBoostAbilityExtraExamplesByType: Partial<Record<Showdown.TypeName, string[]>> = {
+  Steel: ['Steely Spirit'],
+};
+
 // PokemonTypeAssociativeItems mixes boosting items with type-changers (Drives/Memories, out of scope
 // here -- they don't boost damage) and resistance berries (one-shot, announce themselves via
 // |-enditem|, also out of scope per the spec's §2) -- filter both out to leave just the classic
@@ -245,14 +373,18 @@ const itemTypeBoostClass = (
 
 const abilityTypeBoostClass = (
   type: Showdown.TypeName,
-): HackmonsModifierClass => ({
-  id: `ability-type-${formatId(type)}-1.5`,
-  slot: 'ability',
-  scope: { type },
-  multiplier: 1.5,
-  representative: TypeBoostAbilityByType[type],
-  examples: [TypeBoostAbilityByType[type]],
-});
+): HackmonsModifierClass => {
+  const multiplier = TypeBoostAbilityMultiplierByType[type] || 1.5;
+
+  return {
+    id: `ability-type-${formatId(type)}-${multiplier}`,
+    slot: 'ability',
+    scope: { type },
+    multiplier,
+    representative: TypeBoostAbilityByType[type],
+    examples: [TypeBoostAbilityByType[type], ...(TypeBoostAbilityExtraExamplesByType[type] || [])],
+  };
+};
 
 const AdaptabilityModifier: HackmonsModifierClass = {
   id: 'ability-stab-2',
@@ -261,6 +393,36 @@ const AdaptabilityModifier: HackmonsModifierClass = {
   multiplier: 2,
   representative: 'Adaptability',
   examples: ['Adaptability'],
+};
+
+// Group 4 (-ate abilities, T4): unlike Group 3's damage-only scoping, these retype Normal moves to
+// `scope.type` AND boost them x1.2 -- both effects come straight from @smogon/calc's own (dex-accurate)
+// ability mechanic once `representative` is set as the candidate's ability override, so there's no
+// separate multiplier/retype math to write here, same as every other real-ability class above.
+const AteModifierByType: Partial<Record<Showdown.TypeName, HackmonsModifierClass>> = {
+  Fairy: {
+    id: 'ability-ate-fairy', slot: 'ability', scope: { type: 'Fairy' }, multiplier: 1.2, representative: 'Pixilate', examples: ['Pixilate'], directEvidence: true,
+  },
+  Flying: {
+    id: 'ability-ate-flying', slot: 'ability', scope: { type: 'Flying' }, multiplier: 1.2, representative: 'Aerilate', examples: ['Aerilate'], directEvidence: true,
+  },
+  Ice: {
+    id: 'ability-ate-ice', slot: 'ability', scope: { type: 'Ice' }, multiplier: 1.2, representative: 'Refrigerate', examples: ['Refrigerate'], directEvidence: true,
+  },
+  Electric: {
+    id: 'ability-ate-electric', slot: 'ability', scope: { type: 'Electric' }, multiplier: 1.2, representative: 'Galvanize', examples: ['Galvanize'], directEvidence: true,
+  },
+};
+
+// Normalize (Group 4's mirror): turns every OTHER type of move into Normal (same x1.2 boost)
+const NormalizeModifier: HackmonsModifierClass = {
+  id: 'ability-normalize',
+  slot: 'ability',
+  scope: { type: 'Normal' },
+  multiplier: 1.2,
+  representative: 'Normalize',
+  examples: ['Normalize'],
+  directEvidence: true,
 };
 
 const modifierOverrideFromClass = (
@@ -646,6 +808,68 @@ const isEventStabMove = (
   const types = applyEventPokemonSnapshot(state.format, candidatePokemon, event.attackerSnapshot)?.types;
 
   return !!types?.includes(moveType);
+};
+
+// T4 (effectiveness contradiction, Group 4's signature): the multiplier a NATURAL attacking type
+// would produce against a (possibly dual-type) defender, read straight off @smogon/calc's own type
+// chart -- never reimplemented by hand, same policy as every damage multiplier in this file
+const typeEffectivenessMultiplier = (
+  dex: ReturnType<typeof getGenDexForFormat>,
+  attackingType: Showdown.TypeName,
+  defendingTypes: Showdown.TypeName[],
+): number => (defendingTypes || []).reduce((multiplier, defendingType) => {
+  const value = dex?.types?.get(formatId(attackingType) as never)?.effectiveness?.[defendingType];
+
+  return multiplier * (typeof value === 'number' ? value : 1);
+}, 1);
+
+const effectivenessFromMultiplier = (
+  multiplier: number,
+): HackmonsInferenceEvent['effectiveness'] => {
+  if (!multiplier) {
+    return 'immune';
+  }
+
+  if (multiplier > 1) {
+    return 'super';
+  }
+
+  if (multiplier < 1) {
+    return 'resisted';
+  }
+
+  return 'neutral';
+};
+
+// whether this event's logged effectiveness line is impossible for the move's NATURAL type against
+// the defender's known/snapshotted types -- direct evidence a type-changing ability (Pixilate,
+// Normalize, ...) is in play, independent of whether the damage magnitude alone would've read as an
+// outlier (Case D: "the effectiveness line is independent, near-conclusive evidence the damage math
+// alone can't provide")
+const eventEffectivenessContradicts = (
+  state: CalcdexBattleState,
+  event: HackmonsInferenceEvent,
+  context: DamageEventContext,
+): boolean => {
+  if (!event?.effectiveness || context?.relation !== 'attacker') {
+    return false;
+  }
+
+  const moveType = getMoveData(state, event)?.type;
+  const defenderTypes = applyEventPokemonSnapshot(
+    state.format,
+    context.defenderMatch?.pokemon,
+    event.defenderSnapshot,
+  )?.types;
+
+  if (!moveType || !defenderTypes?.length) {
+    return false;
+  }
+
+  const dex = getGenDexForFormat(state.format);
+  const naturalCategory = effectivenessFromMultiplier(typeEffectivenessMultiplier(dex, moveType, defenderTypes));
+
+  return naturalCategory !== event.effectiveness;
 };
 
 const getMoveInfluence = (
@@ -1376,7 +1600,19 @@ const hasChoiceLockViolation = (
   return [...movesByStint.values()].some((moves) => moves.size > 1);
 };
 
-const ChoiceModifierIds = new Set(['item-atk-1.5', 'item-spa-1.5', 'item-spe-1.5']);
+// audit fold F3: replaces the old hardcoded 'ChoiceModifierIds'/'item-both-1.3' id checks -- a
+// class's disqualifying evidence is now declared on the catalog entry itself (see A1's split above,
+// where the item-slot Choice Band class keeps 'choice-lock' but the ability-slot Gorilla
+// Tactics/Hustle class doesn't), so adding a future disqualifiable class is a data change, not a new
+// branch here or at the speed-side call site below
+const disqualifiedByEvidence = (
+  modifier: HackmonsModifierClass,
+  choiceLockDisqualified: boolean,
+  recoilDisqualifiesLifeOrb: boolean,
+): boolean => (
+  (modifier.disqualifiers?.includes('choice-lock') && choiceLockDisqualified)
+    || (modifier.disqualifiers?.includes('no-recoil') && recoilDisqualifiesLifeOrb)
+);
 
 // shared between the damage-side and speed-side hypothesis searches so an already-adopted modifier
 // on one side (e.g. a damage-side item) isn't also offered as a speed-side item hypothesis -- a mon
@@ -1404,62 +1640,168 @@ const computePinnedSlots = (
   return pinned;
 };
 
+// the candidate's own CalcdexPokemon for this event's role -- resolveEventRelation() already
+// guarantees attackerMatch/defenderMatch resolves to the candidate on whichever side `relation`
+// names, so this is just picking the right side rather than a fresh lookup
+const eventCandidatePokemon = (
+  context: DamageEventContext,
+): CalcdexPokemon => (
+  context?.relation === 'attacker' ? context.attackerMatch?.pokemon : context.defenderMatch?.pokemon
+);
+
+// species-conditional predicate (Eviolite): reads the real dex's `nfe` flag rather than hand-rolling
+// an NFE species list, same accessor pattern as every other dex lookup in this file
+const isCandidateNfe = (
+  state: CalcdexBattleState,
+  context: DamageEventContext,
+): boolean => {
+  const pokemon = eventCandidatePokemon(context);
+  const dex = getGenDexForFormat(state.format);
+  const speciesId = formatId(pokemon?.transformedForme || pokemon?.speciesForme);
+
+  return !!speciesId && !!dex?.species.get(speciesId as never)?.nfe;
+};
+
+interface ModifierProposalRule {
+  id: string;
+  relation: 'attacker' | 'defender';
+  outlierDirection: HackmonsDamageOutlier;
+  offensiveStats?: ('atk' | 'spa')[];
+  defensiveStats?: ('def' | 'spd')[];
+  proposeWhen?: (state: CalcdexBattleState, event: HackmonsInferenceEvent, context: DamageEventContext) => boolean;
+}
+
+// audit fold F2: one data row per T1 magnitude class, replacing the old inline if-chain --
+// `directEvidence` classes (Parental Bond, Group 4's -ate/Normalize) aren't here, they're proposed by
+// their own trigger collectors instead (collectParentalBondTriggers/collectTypeChangeTrigger), since
+// their evidence shape isn't a single-event magnitude outlier at all
+const ModifierProposalRules: ModifierProposalRule[] = [
+  {
+    id: 'ability-atk-2', relation: 'attacker', outlierDirection: 'too-high', offensiveStats: ['atk'],
+  },
+  {
+    id: 'item-atk-1.5', relation: 'attacker', outlierDirection: 'too-high', offensiveStats: ['atk'],
+  },
+  {
+    id: 'ability-atk-1.5', relation: 'attacker', outlierDirection: 'too-high', offensiveStats: ['atk'],
+  },
+  {
+    id: 'item-atk-1.1', relation: 'attacker', outlierDirection: 'too-high', offensiveStats: ['atk'],
+  },
+  {
+    id: 'item-both-1.3', relation: 'attacker', outlierDirection: 'too-high', offensiveStats: ['atk', 'spa'],
+  },
+  {
+    id: 'item-spa-1.5', relation: 'attacker', outlierDirection: 'too-high', offensiveStats: ['spa'],
+  },
+  {
+    id: 'item-spa-1.1', relation: 'attacker', outlierDirection: 'too-high', offensiveStats: ['spa'],
+  },
+  {
+    id: 'ability-waterbubble-water-dealt-2',
+    relation: 'attacker',
+    outlierDirection: 'too-high',
+    offensiveStats: ['atk', 'spa'],
+    proposeWhen: (state, event) => getMoveData(state, event)?.type === 'Water',
+  },
+  {
+    id: 'ability-tintedlens-resisted-dealt-2',
+    relation: 'attacker',
+    outlierDirection: 'too-high',
+    proposeWhen: (_state, event) => event.effectiveness === 'resisted',
+  },
+  {
+    id: 'ability-atk-0.5', relation: 'attacker', outlierDirection: 'too-low', offensiveStats: ['atk'],
+  },
+  {
+    id: 'ability-def-2', relation: 'defender', outlierDirection: 'too-low', defensiveStats: ['def'],
+  },
+  {
+    id: 'ability-special-taken-0.5', relation: 'defender', outlierDirection: 'too-low', defensiveStats: ['spd'],
+  },
+  {
+    id: 'item-spd-1.5', relation: 'defender', outlierDirection: 'too-low', defensiveStats: ['spd'],
+  },
+  {
+    id: 'item-eviolite-defspd-1.5',
+    relation: 'defender',
+    outlierDirection: 'too-low',
+    defensiveStats: ['def', 'spd'],
+    proposeWhen: (state, _event, context) => isCandidateNfe(state, context),
+  },
+  {
+    id: 'ability-se-taken-0.75',
+    relation: 'defender',
+    outlierDirection: 'too-low',
+    proposeWhen: (_state, event) => event.effectiveness === 'super',
+  },
+  {
+    id: 'ability-full-hp-taken-0.5',
+    relation: 'defender',
+    outlierDirection: 'too-low',
+    proposeWhen: (_state, event) => event.startHp === event.maxHp,
+  },
+  {
+    id: 'ability-thickfat-fireice-0.5',
+    relation: 'defender',
+    outlierDirection: 'too-low',
+    proposeWhen: (state, event) => ['Fire', 'Ice'].includes(getMoveData(state, event)?.type),
+  },
+  {
+    id: 'ability-heatproof-fire-taken-0.5',
+    relation: 'defender',
+    outlierDirection: 'too-low',
+    proposeWhen: (state, event) => getMoveData(state, event)?.type === 'Fire',
+  },
+  {
+    id: 'ability-purifyingsalt-ghost-taken-0.5',
+    relation: 'defender',
+    outlierDirection: 'too-low',
+    proposeWhen: (state, event) => getMoveData(state, event)?.type === 'Ghost',
+  },
+  {
+    // `too-high` twins: the defender takes MORE than max roll from a Fire hit
+    id: 'ability-fluffy-fire-taken-2',
+    relation: 'defender',
+    outlierDirection: 'too-high',
+    proposeWhen: (state, event) => getMoveData(state, event)?.type === 'Fire',
+  },
+  {
+    id: 'ability-dryskin-fire-taken-1.25',
+    relation: 'defender',
+    outlierDirection: 'too-high',
+    proposeWhen: (state, event) => getMoveData(state, event)?.type === 'Fire',
+  },
+];
+
 const modifierClassesForTrigger = (
   state: CalcdexBattleState,
   trigger: ModifierTrigger,
   pinnedSlots: Set<'item' | 'ability'>,
+  contradictingEventIds: Set<string>,
 ): HackmonsModifierClass[] => {
   const { event, context, outlier } = trigger;
-  const classes = new Set<string>();
-  const add = (id: string) => {
-    const modifier = modifierById(id);
 
-    if (modifier && !pinnedSlots.has(modifier.slot)) {
-      classes.add(modifier.id);
-    }
-  };
-
-  if (context.relation === 'attacker' && outlier === 'too-high') {
-    if (context.influence.offensiveStat === 'atk') {
-      add('ability-atk-2');
-      add('item-atk-1.5');
-      add('item-both-1.3');
-    }
-
-    if (context.influence.offensiveStat === 'spa') {
-      add('item-spa-1.5');
-      add('item-both-1.3');
-    }
+  // an effectiveness-contradicting event (T4's signature) can ONLY be explained by a type-changing
+  // ability (Group 4) -- a plain magnitude ability/item never touches the battle log's effectiveness
+  // line, so proposing one here would just be a wrong explanation that happens to also fit the damage
+  // numbers (Case D). typeChangeModifierClasses() is what proposes the correct hypothesis for it.
+  // Audit fold F4: the contradicting-event set is computed once by collectTypeChangeTrigger() and
+  // passed in here, rather than re-running eventEffectivenessContradicts() per trigger.
+  if (contradictingEventIds.has(event.id)) {
+    return [];
   }
 
-  if (context.relation === 'attacker' && outlier === 'too-low' && context.influence.offensiveStat === 'atk') {
-    add('ability-atk-0.5');
-  }
-
-  if (context.relation === 'defender' && outlier === 'too-low') {
-    if (context.influence.defensiveStat === 'def') {
-      add('ability-def-2');
-    }
-
-    if (context.influence.defensiveStat === 'spd') {
-      add('ability-special-taken-0.5');
-      add('item-spd-1.5');
-    }
-
-    if (event.effectiveness === 'super') {
-      add('ability-se-taken-0.75');
-    }
-
-    if (event.startHp === event.maxHp) {
-      add('ability-full-hp-taken-0.5');
-    }
-
-    if (['Fire', 'Ice'].includes(getMoveData(state, event)?.type)) {
-      add('ability-thickfat-fireice-0.5');
-    }
-  }
-
-  return [...classes].map(modifierById).filter(Boolean);
+  return ModifierProposalRules
+    .filter((rule) => (
+      rule.relation === context.relation
+        && rule.outlierDirection === outlier
+        && (!rule.offensiveStats || rule.offensiveStats.includes(context.influence.offensiveStat as 'atk' | 'spa'))
+        && (!rule.defensiveStats || rule.defensiveStats.includes(context.influence.defensiveStat as 'def' | 'spd'))
+        && (!rule.proposeWhen || rule.proposeWhen(state, event, context))
+    ))
+    .map((rule) => modifierById(rule.id))
+    .filter((modifier) => modifier && !pinnedSlots.has(modifier.slot));
 };
 
 const collectModifierTriggers = (
@@ -1601,6 +1943,7 @@ const ParentalBondModifier: HackmonsModifierClass = {
   multiplier: 1.25,
   representative: 'Parental Bond',
   examples: ['Parental Bond'],
+  directEvidence: true,
 };
 
 // Parental Bond's second hit is 25% power in gen 9; allow for roll variance on BOTH hits
@@ -1646,6 +1989,88 @@ const parentalBondModifierClasses = (
   pinnedSlots: Set<'item' | 'ability'>,
 ): HackmonsModifierClass[] => (pinnedSlots.has('ability') ? [] : [ParentalBondModifier]);
 
+interface TypeChangeTrigger {
+  contradictingEventIds: string[];
+}
+
+// T4: -ate/Normalize are battle-long ability effects on the candidate (not per-event), so this is a
+// single aggregate trigger (mirrors collectSpeedTrigger's shape) rather than a per-event list like T1
+const collectTypeChangeTrigger = (
+  state: CalcdexBattleState,
+  events: HackmonsInferenceEvent[],
+  contexts: Map<string, DamageEventContext>,
+): TypeChangeTrigger | null => {
+  const contradicting = events.filter((event) => (
+    event.eventType !== 'speed'
+      && !event.crit
+      && eventEffectivenessContradicts(state, event, contexts.get(event.id))
+  ));
+
+  return contradicting.length ? { contradictingEventIds: contradicting.map((event) => event.id) } : null;
+};
+
+// scope/type derivation (§4 Group 4): the changed type is DERIVED, not guessed -- a candidate class
+// survives only if it makes EVERY observed effectiveness line, across EVERY event this attacker's
+// matching-natural-type moves produced (not just the one(s) that triggered T4), consistent. Multiple
+// survivors are a genuine tie (e.g. a pure Dragon defender can't distinguish Ice from Fairy) -- adopted
+// via the same best-of ranking every other group uses, same as the rest of this file's ties
+const typeChangeModifierClasses = (
+  state: CalcdexBattleState,
+  events: HackmonsInferenceEvent[],
+  contexts: Map<string, DamageEventContext>,
+  pinnedSlots: Set<'item' | 'ability'>,
+): HackmonsModifierClass[] => {
+  if (pinnedSlots.has('ability')) {
+    return [];
+  }
+
+  const dex = getGenDexForFormat(state.format);
+  const attackerEvents = events.filter((event) => (
+    event.eventType !== 'speed' && !event.crit && contexts.get(event.id)?.relation === 'attacker' && !!event.effectiveness
+  ));
+
+  const isConsistent = (
+    naturalType: Showdown.TypeName,
+    changedType: Showdown.TypeName,
+  ): boolean => attackerEvents
+    .filter((event) => getMoveData(state, event)?.type === naturalType)
+    .every((event) => {
+      const context = contexts.get(event.id);
+      const defenderTypes = applyEventPokemonSnapshot(
+        state.format,
+        context.defenderMatch?.pokemon,
+        event.defenderSnapshot,
+      )?.types;
+
+      if (!defenderTypes?.length) {
+        return true;
+      }
+
+      return effectivenessFromMultiplier(typeEffectivenessMultiplier(dex, changedType, defenderTypes)) === event.effectiveness;
+    });
+
+  const classes: HackmonsModifierClass[] = [];
+  const hasNormalMove = attackerEvents.some((event) => getMoveData(state, event)?.type === 'Normal');
+
+  if (hasNormalMove) {
+    (Object.keys(AteModifierByType) as Showdown.TypeName[]).forEach((changedType) => {
+      if (isConsistent('Normal', changedType)) {
+        classes.push(AteModifierByType[changedType]);
+      }
+    });
+  }
+
+  const nonNormalTypes = new Set(
+    attackerEvents.map((event) => getMoveData(state, event)?.type).filter((type) => type && type !== 'Normal'),
+  );
+
+  if (nonNormalTypes.size && [...nonNormalTypes].every((type) => isConsistent(type, 'Normal'))) {
+    classes.push(NormalizeModifier);
+  }
+
+  return classes;
+};
+
 const evaluatePublishedMatches = (
   state: CalcdexBattleState,
   events: HackmonsInferenceEvent[],
@@ -1682,9 +2107,11 @@ const searchModifierHypotheses = (
   triggers: ModifierTrigger[],
   jointConflictTriggers: JointConflictTrigger[],
   parentalBondTriggers: ParentalBondTrigger[],
+  typeChangeTrigger: TypeChangeTrigger | null,
   rollCache?: Map<string, number[]>,
+  phaseOneBest?: SpreadCandidate,
 ): { adopted?: ModifierSearchResult; possible: HackmonsInferredModifier[]; } => {
-  if (!triggers.length && !jointConflictTriggers.length && !parentalBondTriggers.length) {
+  if (!triggers.length && !jointConflictTriggers.length && !parentalBondTriggers.length && !typeChangeTrigger) {
     return { possible: [] };
   }
 
@@ -1692,8 +2119,12 @@ const searchModifierHypotheses = (
 
   const hypotheses = new Map<string, HackmonsModifierClass>();
 
+  // audit fold F4: computed once here (rather than re-running eventEffectivenessContradicts() per
+  // trigger inside modifierClassesForTrigger()) and reused below for typeChangeContradictingEvents too
+  const contradictingEventIds = new Set(typeChangeTrigger?.contradictingEventIds || []);
+
   triggers.forEach((trigger) => {
-    modifierClassesForTrigger(state, trigger, pinnedSlots)
+    modifierClassesForTrigger(state, trigger, pinnedSlots, contradictingEventIds)
       .forEach((modifier) => hypotheses.set(modifier.id, modifier));
   });
 
@@ -1712,9 +2143,22 @@ const searchModifierHypotheses = (
       .forEach((modifier) => hypotheses.set(modifier.id, modifier));
   }
 
+  // Group 4 (-ate/Normalize): the changed type is derived from every attacker-side event this mon
+  // produced, not just the trigger's own contradicting ones -- see typeChangeModifierClasses()
+  if (typeChangeTrigger) {
+    typeChangeModifierClasses(state, events, phaseOneContexts, pinnedSlots)
+      .forEach((modifier) => hypotheses.set(modifier.id, modifier));
+  }
+
   if (!hypotheses.size) {
     return { possible: [] };
   }
+
+  const endTimer = runtimer(lSearchModifiers.scope, lSearchModifiers);
+
+  const typeChangeContradictingEvents = [...contradictingEventIds]
+    .map((id) => ({ event: events.find((event) => event.id === id), context: phaseOneContexts.get(id) }))
+    .filter(({ event }) => !!event);
 
   const allTriggers: ModifierTrigger[] = [
     ...triggers,
@@ -1725,6 +2169,12 @@ const searchModifierHypotheses = (
       feasibility: {} as HackmonsExtremalFeasibility,
     }))),
     ...parentalBondTriggers.map(({ event, context }) => ({
+      event,
+      context,
+      outlier: 'too-high' as HackmonsDamageOutlier,
+      feasibility: {} as HackmonsExtremalFeasibility,
+    })),
+    ...typeChangeContradictingEvents.map(({ event, context }) => ({
       event,
       context,
       outlier: 'too-high' as HackmonsDamageOutlier,
@@ -1743,16 +2193,13 @@ const searchModifierHypotheses = (
   const choiceLockDisqualified = hasChoiceLockViolation(events, phaseOneContexts);
 
   [...hypotheses.values()].forEach((modifier) => {
-    if (
-      (modifier.id === 'item-both-1.3' && recoilDisqualifiesLifeOrb)
-        || (ChoiceModifierIds.has(modifier.id) && choiceLockDisqualified)
-    ) {
+    if (disqualifiedByEvidence(modifier, choiceLockDisqualified, recoilDisqualifiesLifeOrb)) {
       return;
     }
 
     const modifierOverride = modifierOverrideFromClass(modifier);
     // eslint-disable-next-line no-use-before-define
-    const candidates = searchBestCandidates(state, events, candidatePokemon, rollCache, modifierOverride);
+    const candidates = searchBestCandidates(state, events, candidatePokemon, rollCache, modifierOverride, phaseOneBest);
     const [candidate] = candidates;
 
     if (!candidate) {
@@ -1786,9 +2233,11 @@ const searchModifierHypotheses = (
       supportingEventIds: supportIds,
     };
 
-    // A1 (feasibility-only adoption) assumes outlier-magnitude evidence -- Parental Bond's hit-SHAPE
-    // evidence is direct and doesn't need an outlier to already exist (the shape is proof on its own)
-    const requiresEliminatedOutlier = modifier.id !== 'ability-parental-bond';
+    // A1 (feasibility-only adoption) assumes outlier-magnitude evidence -- `directEvidence` classes
+    // (Parental Bond's hit-SHAPE, Group 4's effectiveness-CONTRADICTION) are direct and don't need a
+    // magnitude outlier to already exist (the shape/contradiction is proof on its own). Audit fold F1:
+    // replaces the old hardcoded id checks against 'ability-parental-bond'/'TypeChangeModifierIds'.
+    const requiresEliminatedOutlier = !modifier.directEvidence;
 
     if (!supportIds.length || collateral || (requiresEliminatedOutlier && !eliminatedOutliers)) {
       return;
@@ -1821,6 +2270,8 @@ const searchModifierHypotheses = (
         || b.score - a.score
     ))[0];
 
+  endTimer('searchModifierHypotheses() ->', hypotheses.size, 'hypotheses searched, adopted:', adopted?.inferredModifier.modifier.id || '(none)');
+
   return { adopted, possible: adopted ? [] : possible };
 };
 
@@ -1835,13 +2286,34 @@ interface SpeedTrigger {
 // T3: the tightest speed-order evidence is unsatisfiable at the candidate's own extremal Spe spread
 // -- checked directly against evaluateCandidateSpeedEvent() rather than describeSpeedBound()'s
 // human-readable bound, since that's the same one-sided-violation check the search itself uses
+// T3 guard (audit finding, §12): a speed-order event only reflects raw Speed if BOTH moves shared the
+// same priority bracket -- flushSpeedOrderEvents() (parseStepQueue.ts) builds a 'speed' event between
+// every adjacent differing-attacker pair in a turn's move order with no priority filter at all, so a
+// priority move going first (Gale Wings, Prankster, Quick Claw, ...) would otherwise be misread as a
+// Speed-infeasibility (false Scarf-class T3 trigger) even though priority alone decided that order,
+// independent of either mon's real Speed stat. Mirrors the existing Trick Room/Tailwind suppression
+// pattern -- this just excludes the event from evidence entirely rather than proposing a competing
+// hypothesis for it.
+const eventHasPriorityMismatch = (
+  state: CalcdexBattleState,
+  event: HackmonsInferenceEvent,
+): boolean => {
+  const dex = getGenDexForFormat(state.format);
+  const fasterPriority = dex?.moves.get(formatId(event.moveName) as never)?.priority || 0;
+  const slowerPriority = dex?.moves.get(formatId(event.slowerMoveName) as never)?.priority || 0;
+
+  return fasterPriority !== slowerPriority;
+};
+
 const collectSpeedTrigger = (
   state: CalcdexBattleState,
   events: HackmonsInferenceEvent[],
   candidatePokemon: CalcdexPokemon,
   speedContexts: Map<string, SpeedEventContext>,
 ): SpeedTrigger | null => {
-  const speedEvents = events.filter((event) => event.eventType === 'speed' && !event.speedOrderSuppressed);
+  const speedEvents = events.filter((event) => (
+    event.eventType === 'speed' && !event.speedOrderSuppressed && !eventHasPriorityMismatch(state, event)
+  ));
 
   if (!speedEvents.length) {
     return null;
@@ -1904,6 +2376,7 @@ const searchSpeedModifierHypothesis = (
   pinnedSlots: Set<'item' | 'ability'>,
   baseOverride: ModifierOverride | undefined,
   rollCache?: Map<string, number[]>,
+  seedCandidate?: SpreadCandidate,
 ): { adopted?: SpeedModifierSearchResult; possible: HackmonsInferredModifier[]; } => {
   const classes = speedModifierClassesForTrigger(trigger, pinnedSlots);
 
@@ -1918,13 +2391,13 @@ const searchSpeedModifierHypothesis = (
   const choiceLockDisqualified = hasChoiceLockViolation(events, damageContexts);
 
   classes.forEach((modifier) => {
-    if (ChoiceModifierIds.has(modifier.id) && choiceLockDisqualified) {
+    if (disqualifiedByEvidence(modifier, choiceLockDisqualified, false)) {
       return;
     }
 
     const modifierOverride = mergeModifierOverrides(baseOverride, modifierOverrideFromClass(modifier));
     // eslint-disable-next-line no-use-before-define
-    const [candidate] = searchBestCandidates(state, events, candidatePokemon, rollCache, modifierOverride);
+    const [candidate] = searchBestCandidates(state, events, candidatePokemon, rollCache, modifierOverride, seedCandidate);
 
     if (!candidate) {
       return;
@@ -2109,7 +2582,12 @@ function searchBestCandidates(
   candidatePokemon: CalcdexPokemon,
   rollCache?: Map<string, number[]>,
   modifierOverride?: ModifierOverride,
+  // warm-start: seed the descent from a nearby known-good candidate (e.g. phase 1's winner) instead of
+  // the blank neutral spread -- every pass still sweeps the full IV/EV/nature grid per stat (see below),
+  // so this only changes the starting point of an otherwise-unchanged exhaustive search, not its breadth
+  seed?: SpreadCandidate,
 ): SpreadCandidate[] {
+  const endTimer = runtimer(lSearchCandidates.scope, lSearchCandidates);
   const scoringEvents = selectScoringEvents(state, events);
   const searchStats = determineSearchStats(state, scoringEvents, candidatePokemon);
 
@@ -2144,10 +2622,11 @@ function searchBestCandidates(
     modifierOverride,
   );
 
-  const baseIvs = blankSpread(DefaultIv);
-  const baseEvs = blankSpread(DefaultEv);
+  const baseIvs = seed ? cloneSpread(seed.ivs) : blankSpread(DefaultIv);
+  const baseEvs = seed ? cloneSpread(seed.evs) : blankSpread(DefaultEv);
+  const baseNature = seed?.nature || NeutralNature;
 
-  let best = score(NeutralNature, baseIvs, baseEvs);
+  let best = score(baseNature, baseIvs, baseEvs);
 
   const seen = new Map<string, SpreadCandidate>();
   let exhausted = false;
@@ -2214,6 +2693,11 @@ function searchBestCandidates(
       }
     }
   }
+
+  endTimer(
+    'searchBestCandidates() ->', seen.size, 'candidates,', scoringEvents.length, 'scoring events,',
+    modifierOverride?.id || '(no modifier)',
+  );
 
   return [...seen.values()].sort((a, b) => b.score - a.score);
 }
@@ -2428,6 +2912,8 @@ export const inferHackmonsSpread = (
       return output;
     }
 
+    const endMonTimer = runtimer(l.scope, l);
+
     // damage rolls are memoized for the duration of this one mon's search (and reused below for the
     // winning candidate's published matches), keyed on the candidate stats that feed each calc
     const rollCache = new Map<string, number[]>();
@@ -2457,7 +2943,10 @@ export const inferHackmonsSpread = (
     const parentalBondTriggers = phaseOneBest && candidateEvents.length
       ? collectParentalBondTriggers(candidateEvents, damageContexts)
       : [];
-    const modifierSearch = (triggers.length || jointConflictTriggers.length || parentalBondTriggers.length)
+    const typeChangeTrigger = phaseOneBest && candidateEvents.length
+      ? collectTypeChangeTrigger(state, candidateEvents, damageContexts)
+      : null;
+    const modifierSearch = (triggers.length || jointConflictTriggers.length || parentalBondTriggers.length || typeChangeTrigger)
       ? searchModifierHypotheses(
         state,
         candidateEvents,
@@ -2467,7 +2956,9 @@ export const inferHackmonsSpread = (
         triggers,
         jointConflictTriggers,
         parentalBondTriggers,
+        typeChangeTrigger,
         rollCache,
+        phaseOneBest,
       )
       : { possible: [] };
     const adoptedModifier = modifierSearch.adopted;
@@ -2479,11 +2970,17 @@ export const inferHackmonsSpread = (
       .forEach((event) => speedContexts.set(event.id, resolveSpeedEventContext(state, event, candidateMatch)));
 
     const speedTrigger = collectSpeedTrigger(state, candidateEvents, candidateMatch, speedContexts);
+    // audit fix A2: a damage-side ability adoption normally also pins the speed search's ability slot
+    // (a mon can only hold one ability) -- but Slow Start's Atk half and Spe half are the SAME
+    // ability, linked via `pairedClassId`, so skip the pin in that case and let the speed search still
+    // evaluate (and potentially co-adopt) the paired class instead of being locked out of it entirely
     const speedPinnedSlots = computePinnedSlots(
       candidateMatch,
       candidateEvents,
       damageContexts,
-      adoptedModifier?.inferredModifier.modifier.slot,
+      adoptedModifier && !adoptedModifier.inferredModifier.modifier.pairedClassId
+        ? adoptedModifier.inferredModifier.modifier.slot
+        : undefined,
     );
     const speedSearch = speedTrigger
       ? searchSpeedModifierHypothesis(
@@ -2497,6 +2994,7 @@ export const inferHackmonsSpread = (
         speedPinnedSlots,
         adoptedModifier ? modifierOverrideFromClass(adoptedModifier.inferredModifier.modifier) : undefined,
         rollCache,
+        adoptedModifier?.candidate || phaseOneBest,
       )
       : { possible: [] };
     const adoptedSpeedModifier = speedSearch.adopted;
@@ -2616,6 +3114,8 @@ export const inferHackmonsSpread = (
     };
 
     output[calcdexId] = monInference;
+
+    endMonTimer('inferHackmonsSpread() ->', calcdexId, candidateEvents.length, 'events (cache miss)');
 
     // skip caching a result tainted by a transient lookup failure -- otherwise the event signature
     // that gates the cache key never changes just because a DIFFERENT player's roster later became
