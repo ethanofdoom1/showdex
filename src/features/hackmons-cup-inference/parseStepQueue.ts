@@ -8,11 +8,13 @@ import {
   type HackmonsInferenceEvent,
   type HackmonsInferenceFieldSnapshot,
   type HackmonsInferencePokemonSnapshot,
+  type HackmonsIllusionReveal,
 } from './types';
 
 interface PendingMove {
   turn: number;
   stepIndex: number;
+  attackerSlot?: string;
   attackerId: string;
   attackerKey?: CalcdexPlayerKey;
   attackerName: string;
@@ -32,7 +34,9 @@ interface PendingMove {
 interface PendingDamageEvent {
   turn: number;
   stepIndex: number;
+  attackerSlot?: string;
   attackerId: string;
+  defenderSlot?: string;
   defenderId: string;
   defenderKey?: CalcdexPlayerKey;
   attackerName: string;
@@ -55,6 +59,7 @@ interface PendingDamageEvent {
   attackerSnapshot: HackmonsInferencePokemonSnapshot;
   defenderSnapshot: HackmonsInferencePokemonSnapshot;
   rawLine: string;
+  defenderStint?: number;
 }
 
 const cloneBoosts = (
@@ -153,7 +158,7 @@ const parseTypeList = (
   .map((typeName) => typeName.trim() as Showdown.TypeName)
   .filter(Boolean);
 
-const parsePokemonToken = (token: string): { id: string; playerKey?: CalcdexPlayerKey; name: string; } => {
+const parsePokemonToken = (token: string): { id: string; slot?: string; playerKey?: CalcdexPlayerKey; name: string; } => {
   const trimmed = token?.trim() || '';
   const [side, ...nameParts] = trimmed.split(':');
   const name = nameParts.join(':').trim() || trimmed;
@@ -162,10 +167,15 @@ const parsePokemonToken = (token: string): { id: string; playerKey?: CalcdexPlay
 
   return {
     id: formatId(`${sideId}:${name || sideId}`),
+    slot: formatId(sideId),
     playerKey,
     name,
   };
 };
+
+const parseSpeciesName = (
+  details: string,
+): string => (details || '').split(',')[0]?.trim() || '';
 
 const parseHpToken = (token: string): { hp?: number; maxhp?: number; } => {
   const [value] = (token || '').split(' ');
@@ -187,6 +197,7 @@ interface ChunkMutableState {
   moveRepeatState: Map<string, { moveId: string; count: number; }>;
   defenseCurlState: Set<string>;
   activeStintState: Map<string, number>;
+  activeSlotStintState: Map<string, number>;
   trickRoomActive: boolean;
   tailwindState: Set<CalcdexPlayerKey>;
   fieldState: HackmonsInferenceFieldSnapshot;
@@ -212,6 +223,7 @@ const createParserState = (): ChunkMutableState => ({
   // per-mon count of how many times it's been sent out (bumped on every switch-in) -- two of a mon's
   // moves sharing a stint but NOT sharing a moveName prove it wasn't Choice-locked during that stint
   activeStintState: new Map(),
+  activeSlotStintState: new Map(),
   trickRoomActive: false,
   tailwindState: new Set(),
   fieldState: {
@@ -238,6 +250,7 @@ const cloneParserState = (
   moveRepeatState: new Map([...state.moveRepeatState].map(([id, entry]) => [id, { ...entry }])),
   defenseCurlState: new Set(state.defenseCurlState),
   activeStintState: new Map(state.activeStintState),
+  activeSlotStintState: new Map(state.activeSlotStintState),
   trickRoomActive: state.trickRoomActive,
   tailwindState: new Set(state.tailwindState),
   fieldState: cloneFieldSnapshot(state.fieldState),
@@ -252,6 +265,7 @@ const processChunk = (
   state: ChunkMutableState,
 ): {
   events: HackmonsInferenceEvent[];
+  illusionReveals: HackmonsIllusionReveal[];
   ignoredEventCount: number;
 } => {
   const {
@@ -264,11 +278,13 @@ const processChunk = (
     moveRepeatState,
     defenseCurlState,
     activeStintState,
+    activeSlotStintState,
     tailwindState,
     fieldState,
   } = state;
 
   const events: HackmonsInferenceEvent[] = [];
+  const illusionReveals: HackmonsIllusionReveal[] = [];
   let ignoredEventCount = 0;
 
   {
@@ -283,8 +299,10 @@ const processChunk = (
         events.push({
           id: `${pendingEvent.turn}:${pendingEvent.stepIndex}:${pendingEvent.attackerId}:${pendingEvent.defenderId}:${formatId(pendingEvent.moveName)}`,
           turn: pendingEvent.turn,
+          attackerSlot: pendingEvent.attackerSlot,
           attackerId: pendingEvent.attackerId,
           attackerKey: pendingMove?.attackerKey,
+          defenderSlot: pendingEvent.defenderSlot,
           defenderId: pendingEvent.defenderId,
           defenderKey: pendingEvent.defenderKey,
           attackerName: pendingEvent.attackerName,
@@ -304,6 +322,7 @@ const processChunk = (
           attackerMoveRepeatCount: pendingMove?.moveRepeatCount,
           attackerDefenseCurled: pendingMove?.defenseCurled,
           attackerStint: pendingMove?.attackerStint,
+          defenderStint: pendingEvent.defenderStint,
           hitDamages: [...pendingEvent.hitDamages],
           recoilObserved: !!pendingEvent.recoilObserved,
           attackerBoosts: cloneBoosts(pendingEvent.attackerBoosts),
@@ -335,14 +354,18 @@ const processChunk = (
           eventType: 'speed',
           id: `${turnNumber}:speed:${fasterMove.attackerId}:${slowerMove.attackerId}:${formatId(fasterMove.moveName)}:${formatId(slowerMove.moveName)}`,
           turn: turnNumber,
+          attackerSlot: fasterMove.attackerSlot,
           attackerId: fasterMove.attackerId,
           attackerKey: fasterMove.attackerKey,
+          defenderSlot: slowerMove.attackerSlot,
           defenderId: slowerMove.attackerId,
           defenderKey: slowerMove.attackerKey,
           attackerName: fasterMove.attackerName,
           defenderName: slowerMove.attackerName,
           moveName: fasterMove.moveName,
           slowerMoveName: slowerMove.moveName,
+          attackerStint: fasterMove.attackerStint,
+          defenderStint: slowerMove.attackerStint,
           speedOrderSuppressed: state.trickRoomActive
             || tailwindState.has(fasterMove.attackerKey)
             || tailwindState.has(slowerMove.attackerKey),
@@ -383,6 +406,7 @@ const processChunk = (
         pendingMoves.set(attacker.id, {
           turn: turnNumber,
           stepIndex,
+          attackerSlot: attacker.slot,
           attackerId: attacker.id,
           attackerKey: attacker.playerKey,
           attackerName: attacker.name,
@@ -392,7 +416,7 @@ const processChunk = (
           hitCounter: hitCounterState.get(attacker.id) || 0,
           moveRepeatCount: repeatEntry?.moveId === moveId ? repeatEntry.count : 0,
           defenseCurled: defenseCurlState.has(attacker.id),
-          attackerStint: activeStintState.get(attacker.id) || 0,
+          attackerStint: (attacker.slot ? activeSlotStintState.get(attacker.slot) : null) || activeStintState.get(attacker.id) || 0,
         });
         moveOrder.push(pendingMoves.get(attacker.id));
 
@@ -406,11 +430,30 @@ const processChunk = (
         const hp = parseHpToken(parts[4]);
 
         if (pokemon.id) {
+          if (type === 'replace' && pokemon.slot) {
+            const revealedName = pokemon.name || parseSpeciesName(parts[3]);
+            const revealedSpecies = parseSpeciesName(parts[3]) || revealedName;
+
+            if (revealedName) {
+              illusionReveals.push({
+                slot: pokemon.slot,
+                revealedName,
+                revealedId: formatId(`${pokemon.slot}:${revealedName}`),
+                revealedSpecies,
+                turn: turnNumber,
+                revealedStint: activeSlotStintState.get(pokemon.slot) || 0,
+              });
+            }
+          }
+
           clearBoosts(boostState, pokemon.id);
           statusState.delete(pokemon.id);
           moveRepeatState.delete(pokemon.id);
           defenseCurlState.delete(pokemon.id);
           activeStintState.set(pokemon.id, (activeStintState.get(pokemon.id) || 0) + 1);
+          if (pokemon.slot) {
+            activeSlotStintState.set(pokemon.slot, (activeSlotStintState.get(pokemon.slot) || 0) + 1);
+          }
           const snapshot = pokemonState.get(pokemon.id);
 
           if (snapshot) {
@@ -845,7 +888,9 @@ const processChunk = (
         pendingDamageEvents.set(damageKey, {
           turn: turnNumber,
           stepIndex,
+          attackerSlot: pendingMove.attackerSlot,
           attackerId: pendingMove.attackerId,
+          defenderSlot: defender.slot,
           defenderId: defender.id,
           defenderKey: defender.playerKey,
           attackerName: pendingMove.attackerName,
@@ -867,6 +912,7 @@ const processChunk = (
           attackerSnapshot: getPokemonSnapshot(pokemonState, pendingMove.attackerId),
           defenderSnapshot: getPokemonSnapshot(pokemonState, defender.id),
           rawLine: step,
+          defenderStint: (defender.slot ? activeSlotStintState.get(defender.slot) : null) || activeStintState.get(defender.id) || 0,
         });
       }
 
@@ -880,6 +926,7 @@ const processChunk = (
 
   return {
     events,
+    illusionReveals,
     ignoredEventCount,
   };
 };
@@ -888,6 +935,7 @@ interface ParserCacheEntry {
   cachedStepQueue: string[];
   closedChunkCount: number;
   closedEvents: HackmonsInferenceEvent[];
+  closedIllusionReveals: HackmonsIllusionReveal[];
   closedIgnoredCount: number;
   state: ChunkMutableState;
 }
@@ -910,6 +958,82 @@ const isStepQueuePrefix = (
   }
 
   return true;
+};
+
+const revealKey = (
+  slot: string,
+  stint: number,
+): string => `${slot}:${stint}`;
+
+const remapIllusionEvents = (
+  events: HackmonsInferenceEvent[],
+  illusionReveals: HackmonsIllusionReveal[],
+): {
+  events: HackmonsInferenceEvent[];
+  ignoredEventCount: number;
+} => {
+  if (!illusionReveals.length) {
+    return { events, ignoredEventCount: 0 };
+  }
+
+  const revealsBySlotStint = new Map(illusionReveals.map((reveal) => [revealKey(reveal.slot, reveal.revealedStint), reveal]));
+  const revealedSlots = new Set(illusionReveals.map((reveal) => reveal.slot));
+  let ignoredEventCount = 0;
+  const remappedEvents: HackmonsInferenceEvent[] = [];
+
+  events.forEach((event) => {
+    let remappedEvent = event;
+    let remapped = false;
+    let quarantine = false;
+    const attackerNeedsCheck = !!event.attackerSlot && revealedSlots.has(event.attackerSlot);
+    const defenderNeedsCheck = !!event.defenderSlot && revealedSlots.has(event.defenderSlot);
+
+    if (attackerNeedsCheck) {
+      const reveal = typeof event.attackerStint === 'number'
+        ? revealsBySlotStint.get(revealKey(event.attackerSlot, event.attackerStint))
+        : null;
+
+      if (reveal?.revealedName && reveal.revealedId) {
+        remappedEvent = {
+          ...remappedEvent,
+          attackerName: reveal.revealedName,
+          attackerId: reveal.revealedId,
+        };
+        remapped = true;
+      } else if (typeof event.attackerStint !== 'number') {
+        quarantine = true;
+      }
+    }
+
+    if (defenderNeedsCheck) {
+      const reveal = typeof event.defenderStint === 'number'
+        ? revealsBySlotStint.get(revealKey(event.defenderSlot, event.defenderStint))
+        : null;
+
+      if (reveal?.revealedName && reveal.revealedId) {
+        remappedEvent = {
+          ...remappedEvent,
+          defenderName: reveal.revealedName,
+          defenderId: reveal.revealedId,
+        };
+        remapped = true;
+      } else if (typeof event.defenderStint !== 'number') {
+        quarantine = true;
+      }
+    }
+
+    if (quarantine && !remapped) {
+      ignoredEventCount++;
+      return;
+    }
+
+    remappedEvents.push(remappedEvent);
+  });
+
+  return {
+    events: remappedEvents,
+    ignoredEventCount,
+  };
 };
 
 export const parseHackmonsInferenceEvents = (
@@ -939,9 +1063,11 @@ export const parseHackmonsInferenceEvents = (
   const runningState = canResume ? cloneParserState(cached.state) : createParserState();
   const preLoopState = cloneParserState(runningState);
   const baseClosedEvents = canResume ? cached.closedEvents : [];
+  const baseClosedIllusionReveals = canResume ? cached.closedIllusionReveals : [];
   const baseClosedIgnoredCount = canResume ? cached.closedIgnoredCount : 0;
 
   const chunkEventLists: HackmonsInferenceEvent[][] = [];
+  const chunkIllusionRevealLists: HackmonsIllusionReveal[][] = [];
   const chunkIgnoredCounts: number[] = [];
   let preLastChunkState = preLoopState;
 
@@ -949,9 +1075,14 @@ export const parseHackmonsInferenceEvents = (
     const steps = chunks[i];
     const turn = steps.find((step) => step.startsWith('|turn|'))?.split('|')[2];
     const turnNumber = Number(turn) || i;
-    const { events: chunkEvents, ignoredEventCount: chunkIgnoredCount } = processChunk(steps, turnNumber, runningState);
+    const {
+      events: chunkEvents,
+      illusionReveals: chunkIllusionReveals,
+      ignoredEventCount: chunkIgnoredCount,
+    } = processChunk(steps, turnNumber, runningState);
 
     chunkEventLists.push(chunkEvents);
+    chunkIllusionRevealLists.push(chunkIllusionReveals);
     chunkIgnoredCounts.push(chunkIgnoredCount);
 
     // snapshot state as of right before the (new) last chunk begins, for the next incremental resume
@@ -965,9 +1096,14 @@ export const parseHackmonsInferenceEvents = (
     ...baseClosedEvents,
     ...chunkEventLists.slice(0, lastIndex).flat(),
   ];
+  const closedIllusionReveals = [
+    ...baseClosedIllusionReveals,
+    ...chunkIllusionRevealLists.slice(0, lastIndex).flat(),
+  ];
   const closedIgnoredCount = baseClosedIgnoredCount
     + chunkIgnoredCounts.slice(0, lastIndex).reduce((total, count) => total + count, 0);
   const openEvents = chunkEventLists[lastIndex] || [];
+  const openIllusionReveals = chunkIllusionRevealLists[lastIndex] || [];
   const openIgnoredCount = chunkIgnoredCounts[lastIndex] || 0;
 
   if (battleId) {
@@ -975,6 +1111,7 @@ export const parseHackmonsInferenceEvents = (
       cachedStepQueue: [...stepQueue],
       closedChunkCount: chunks.length - 1,
       closedEvents,
+      closedIllusionReveals,
       closedIgnoredCount,
       state: preLastChunkState,
     });
@@ -984,8 +1121,13 @@ export const parseHackmonsInferenceEvents = (
     }
   }
 
+  const remapped = remapIllusionEvents(
+    [...closedEvents, ...openEvents],
+    [...closedIllusionReveals, ...openIllusionReveals],
+  );
+
   return {
-    events: [...closedEvents, ...openEvents],
-    ignoredEventCount: closedIgnoredCount + openIgnoredCount,
+    events: remapped.events,
+    ignoredEventCount: closedIgnoredCount + openIgnoredCount + remapped.ignoredEventCount,
   };
 };

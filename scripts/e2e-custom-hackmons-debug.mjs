@@ -28,6 +28,7 @@ const profileDirs = {
 const speciesBaseStats = {
   Mew: { hp: 100, atk: 100, def: 100, spa: 100, spd: 100, spe: 100 },
   Vaporeon: { hp: 130, atk: 65, def: 60, spa: 110, spd: 95, spe: 65 },
+  Zoroark: { hp: 60, atk: 105, def: 60, spa: 120, spd: 60, spe: 105 },
 };
 
 const teamA = (evs, nature, moves, { item = 'Leftovers', ability = 'Pressure', ivs } = {}) => `=== [${formatId}] Showdex Custom A ===
@@ -106,6 +107,27 @@ ${backup.nature} Nature
 ${backup.moves.map((move) => `- ${move}`).join('\n')}
 `;
 
+// opponent (team B) Zoroark that disguises as its Mew teammate via Illusion -- Mew is LAST in the
+// party so Illusion copies it. Used by the `illusion` scenario to prove disguised damage events are
+// remapped onto the revealed Zoroark (not the innocent Mew).
+const teamBWithZoroarkIllusion = () => `=== [${formatId}] Showdex Custom B ===
+
+Zoroark @ Leftovers
+Ability: Illusion
+Level: 100
+EVs: 252 HP / 252 Atk / 4 Def
+Jolly Nature
+- Night Slash
+- Recover
+
+Mew @ Leftovers
+Ability: Pressure
+Level: 100
+EVs: 252 HP / 252 Def / 4 SpD
+Bold Nature
+- Recover
+`;
+
 // each scenario exercises a different inference path; pick one with SCENARIO=<name> (default: mixed)
 const scenarios = {
   // special attacker (Mew) -> SpA/SpD inference + speed bound from Electro Ball / turn order
@@ -149,6 +171,37 @@ const scenarios = {
       { a: 'Recover', b: 'Recover' },
       { a: 'Waterfall', b: 'Earthquake' },
       { a: 'Crunch', b: 'Body Slam' },
+    ],
+  },
+
+  // Illusion (Zoroark) -> disguised-stint damage events must be remapped onto the revealed Zoroark
+  // (or quarantined), never left poisoning the innocent copied teammate. Choreography (copied-mon-out-
+  // before-reveal hypothesis): T1 the disguised Zoroark (shown as "Mew") deals Night Slash damage while
+  // A only Recovers (no reveal); T2 the disguised Zoroark switches OUT and the real copied Mew switches
+  // IN (a genuine Mew |switch| that precedes any |replace|); T3 the real Mew switches OUT and Zoroark
+  // switches back IN, re-disguised as "Mew"; T4 A's Scald hits the disguised Zoroark and breaks the
+  // Illusion (|replace| reveal). The real Mew having genuinely appeared makes the ghost discriminator
+  // clean: [Zoroark, Mew] once each = clean, two entries normalizing to "Mew" = ghost duplicate.
+  illusion: {
+    // run WITHOUT Team Preview so the disguised Zoroark leads as a lone "Mew" (roster length 1 < max 2)
+    // instead of being pre-seeded [Zoroark, Mew] at preview -- this makes syncBattle's reveal-time ghost
+    // dedup (which only fires once length >= maxPokemon) get skipped, exposing the pre-existing ghost bug.
+    // The @@@ custom-rule goes on the /challenge only; the teambuilder import keeps the plain formatId.
+    // NOTE: Showdown custom-rule syntax uses `!<Rule>` to REMOVE a rule; `-<X>` bans a Pokemon/move/etc
+    // (this server rejects `-Team Preview` with "Nothing matches Team Preview"). So the effective token
+    // is `!Team Preview` even though the frozen gate GCR1 wrote it as `-Team Preview`.
+    formatSuffix: '@@@ !Team Preview',
+    skipTeamPreview: true,
+    teams: {
+      a: teamA('252 HP / 252 Def / 4 SpA', 'Bold', ['Scald', 'Recover']),
+      b: teamBWithZoroarkIllusion(),
+    },
+    plannedTurns: [
+      { a: 'Recover', b: 'Night Slash' }, // disguised Zoroark ("Mew") deals damage; A doesn't hit it -> no reveal yet
+      { a: 'Recover', b: 'Switch' }, // disguised Zoroark switches OUT -> real Mew switches IN (genuine Mew |switch|, still disguised, no reveal)
+      { a: 'Recover', b: 'Switch' }, // real Mew switches OUT -> Zoroark back IN, re-disguised as "Mew"
+      { a: 'Scald', b: 'Recover' }, // A's Scald hits the disguised Zoroark -> |replace| reveal (after the real Mew already appeared)
+      { a: 'Recover', b: 'Recover' }, // settle turn: let the Calcdex re-sync after the reveal so the panel label resolves
     ],
   },
 
@@ -812,8 +865,8 @@ const dismissExternalAccessPrompt = async (page) => {
 
 const resolveExtensionDir = () => {
   const candidates = [
-    path.resolve('build/chrome'),
     path.resolve('dist/chrome'),
+    path.resolve('build/chrome'),
   ];
 
   const existing = candidates.find((dir) => fs.existsSync(path.join(dir, 'manifest.json')));
@@ -853,6 +906,8 @@ const createContext = async (label) => {
     headless: false,
     args: [
       '--mute-audio',
+      '--disable-crash-reporter',
+      '--disable-crashpad',
       '--allow-insecure-localhost',
       '--disable-web-security',
       '--disable-features=LocalNetworkAccessChecks,LocalNetworkAccessPermissionPrompt,PrivateNetworkAccessSendPreflights,PrivateNetworkAccessRespectPreflightResults,BlockInsecurePrivateNetworkRequests',
@@ -1684,10 +1739,74 @@ const snapshotBattle = async (page, battleId) => page.evaluate(({ roomId, realSp
     })
     : [];
 
+  const allPanels = [...document.querySelectorAll('[data-hackmons-estimate-events]')].map((node) => {
+    let label = null;
+    let el = node;
+    for (let i = 0; i < 8 && el; i++) {
+      const forme = el.querySelector?.('[class*="forme"], [class*="Forme"], [class*="speciesForme"]');
+      if (forme?.textContent) { label = forme.textContent.trim(); break; }
+      el = el.parentElement;
+    }
+    let events = [];
+    try { events = JSON.parse(node.getAttribute('data-hackmons-estimate-events') || '[]'); } catch { events = []; }
+    return {
+      label,
+      eventCount: Number(node.getAttribute('data-hackmons-event-count')) || 0,
+      ignoredCount: Number(node.getAttribute('data-hackmons-ignored-count')) || 0,
+      moves: events.map((event) => event.moveName),
+    };
+  });
+
+  // dump the OPPONENT player's Calcdex roster (pokemon[]) so the Illusion "ghost" duplicate is
+  // observable. The roster lives in redux/react state, not on window: reach it via React-fiber
+  // traversal from a Calcdex panel node -- walk up the `.return` chain to the CalcdexContext.Provider
+  // fiber, whose memoizedProps.value.state is the CalcdexBattleState (state.opponentKey names the
+  // inferred/opponent side, state[opponentKey].pokemon[] carries speciesForme + calcdexId per mon).
+  let opponentRoster = null;
+  let opponentRosterError = null;
+  try {
+    const anchor = document.querySelector('[data-hackmons-estimate-events]')
+      || document.querySelector('[class*="Calcdex"]');
+    if (!anchor) {
+      opponentRosterError = 'no Calcdex anchor node found';
+    } else {
+      const fiberKey = Object.keys(anchor).find((k) => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+      if (!fiberKey) {
+        opponentRosterError = 'no react fiber key on anchor node';
+      } else {
+        let fiber = anchor[fiberKey];
+        let calcdexState = null;
+        for (let i = 0; i < 200 && fiber; i++) {
+          const value = fiber.memoizedProps?.value;
+          if (value?.state && value.state.opponentKey && value.state[value.state.opponentKey]?.pokemon) {
+            calcdexState = value.state;
+            break;
+          }
+          fiber = fiber.return;
+        }
+        if (!calcdexState) {
+          opponentRosterError = 'walked fiber chain without finding CalcdexContext state';
+        } else {
+          const opponentKey = calcdexState.opponentKey;
+          const opponentPlayer = calcdexState[opponentKey];
+          opponentRoster = (opponentPlayer?.pokemon || []).map((mon) => ({
+            speciesForme: mon?.speciesForme ?? null,
+            calcdexId: mon?.calcdexId ?? null,
+          }));
+        }
+      }
+    }
+  } catch (error) {
+    opponentRosterError = String(error?.message || error);
+  }
+
   return {
     battleId: roomId,
     title: room?.title || null,
     turn: room?.battle?.turn || null,
+    allPanels,
+    opponentRoster,
+    opponentRosterError,
     requestType: room?.request?.requestType || null,
     stepQueueTail: stepQueue.slice(-40),
     stepQueueLength: stepQueue.length,
@@ -1784,7 +1903,7 @@ try {
 
   await pages[0].evaluate(
     ({ opponent, format }) => window.app.send(`/challenge ${opponent}, ${format}`),
-    { opponent: playerNames[1], format: formatId },
+    { opponent: playerNames[1], format: scenario.formatSuffix ? `${formatId} ${scenario.formatSuffix}` : formatId },
   );
 
   let battleIds = await Promise.all(pages.map((page) => waitForAnyBattleRoom(page)));
@@ -1817,9 +1936,13 @@ try {
   console.log('Battle rooms:', battleIds);
 
   // resolve team preview for both sides directly -- the planned-turn loop below (which normally sends
-  // this choice) hasn't started yet, and nothing else will ever leave team preview on its own
-  await Promise.all(pages.map((page, index) => waitForRequestPresent(page, battleIds[index])));
-  await Promise.all(pages.map((page, index) => submitTeamPreview(page, battleIds[index])));
+  // this choice) hasn't started yet, and nothing else will ever leave team preview on its own.
+  // Scenarios that remove Team Preview (scenario.skipTeamPreview) have no teampreview request at all,
+  // so both the wait and the submit are skipped -- otherwise the wait would block for its full timeout.
+  if (!scenario.skipTeamPreview) {
+    await Promise.all(pages.map((page, index) => waitForRequestPresent(page, battleIds[index])));
+    await Promise.all(pages.map((page, index) => submitTeamPreview(page, battleIds[index])));
+  }
 
   // captured right as turn 1 begins (after team preview resolves, before any planned move is
   // submitted) -- this is the "battle just started, zero events observed" moment the blank
@@ -1957,6 +2080,54 @@ try {
 
     if (failedChecks.length) {
       throw new Error(`Temporary state repeated-move checks failed: ${JSON.stringify(failedChecks, null, 2)}`);
+    }
+  }
+
+  if (scenarioName === 'illusion') {
+    // GB2: a Zoroark disguised as its Mew teammate takes/deals damage while disguised, then is
+    // revealed via |replace|. The disguised-stint damage events (Night Slash by Zoroark, Scald into
+    // Zoroark) must NOT land on any innocent (non-Zoroark) opponent panel -- they must be either
+    // remapped onto the revealed Zoroark's panel or quarantined (dropped into ignoredCount).
+    const disguisedMoveNames = new Set(['Night Slash', 'Scald']);
+    const panels = finalSnapshot?.allPanels || [];
+    const panelsWithDisguised = panels.filter((panel) => (panel.moves || []).some((move) => disguisedMoveNames.has(move)));
+    const zoroarkPanelsWithDisguised = panelsWithDisguised.filter((panel) => (panel.label || '').includes('Zoroark'));
+    const innocentPanelsWithDisguised = panelsWithDisguised.filter((panel) => !(panel.label || '').includes('Zoroark'));
+    const totalIgnored = panels.reduce((sum, panel) => sum + (panel.ignoredCount || 0), 0);
+    const remappedToZoroark = zoroarkPanelsWithDisguised.length > 0;
+    const quarantined = totalIgnored > 0;
+
+    const illusionCheck = {
+      panels,
+      remappedToZoroark,
+      quarantined,
+      innocentPanelsWithDisguised,
+    };
+
+    console.log('Illusion attribution check:');
+    console.log(JSON.stringify(illusionCheck, null, 2));
+
+    console.log('Opponent Calcdex roster dump:');
+    console.log(JSON.stringify(finalSnapshot.opponentRoster, null, 2));
+    if (finalSnapshot.opponentRosterError) {
+      console.log('Opponent Calcdex roster dump error:', finalSnapshot.opponentRosterError);
+    }
+
+    // printed DIAGNOSTIC only (never thrown): true iff two roster entries share a normalized
+    // speciesForme -- the ghost-duplicate discriminator the architect reads (GCR-R3). A clean roster
+    // is [Zoroark, Mew] once each (false); a ghost is two entries normalizing to "Mew" (true).
+    const rosterFormes = (finalSnapshot.opponentRoster || [])
+      .map((mon) => (mon?.speciesForme || '').toLowerCase().replace(/[^a-z0-9]+/g, ''))
+      .filter(Boolean);
+    const duplicateSpeciesForme = new Set(rosterFormes).size < rosterFormes.length;
+    console.log('Opponent Calcdex roster duplicateSpeciesForme:', duplicateSpeciesForme);
+
+    if (innocentPanelsWithDisguised.length) {
+      throw new Error(`Illusion damage was attributed to an innocent teammate panel: ${JSON.stringify(illusionCheck, null, 2)}`);
+    }
+
+    if (!remappedToZoroark && !quarantined) {
+      throw new Error(`Illusion damage was neither remapped to Zoroark nor quarantined: ${JSON.stringify(illusionCheck, null, 2)}`);
     }
   }
 } finally {
