@@ -83,11 +83,21 @@
   border: 1px solid color.alpha(colors.$green, 0.36);
   border-radius: 4px;
   color: colors.$green;
+  cursor: pointer;
   overflow-wrap: anywhere;
+  user-select: none;
 
   &.possible {
     border-color: color.alpha(colors.$orange, 0.36);
     color: colors.$orange;
+  }
+
+  &:hover {
+    background-color: color.alpha(colors.$green, 0.08);
+  }
+
+  &.possible:hover {
+    background-color: color.alpha(colors.$orange, 0.08);
   }
 }
 

@@ -131,8 +131,10 @@ export interface HackmonsInferenceEvent {
   eventType?: 'damage' | 'speed';
   id: string;
   turn: number;
+  attackerSlot?: string;
   attackerId: string;
   attackerKey?: CalcdexPlayerKey;
+  defenderSlot?: string;
   defenderId: string;
   defenderKey?: CalcdexPlayerKey;
   attackerName: string;
@@ -180,6 +182,7 @@ export interface HackmonsInferenceEvent {
    * @since 1.3.0
    */
   attackerStint?: number;
+  defenderStint?: number;
 
   /**
    * Number of times the attacker has been directly hit by a damaging move prior to this move
@@ -212,6 +215,15 @@ export interface HackmonsInferenceEvent {
   attackerSnapshot?: HackmonsInferencePokemonSnapshot;
   defenderSnapshot?: HackmonsInferencePokemonSnapshot;
   rawLine: string;
+}
+
+export interface HackmonsIllusionReveal {
+  slot: string;
+  revealedName: string;
+  revealedId: string;
+  revealedSpecies: string;
+  turn: number;
+  revealedStint: number;
 }
 
 export interface HackmonsDamageMatch {

@@ -1,5 +1,6 @@
 import * as React from 'react';
 import cx from 'classnames';
+import { type AbilityName, type ItemName } from '@smogon/calc';
 import { Button } from '@showdex/components/ui';
 import { PokemonStatNames } from '@showdex/consts/dex';
 import { calcdexSlice, useDispatch } from '@showdex/redux/store';
@@ -31,6 +32,42 @@ const formatModifierScope = (
   return scope === 'stab' ? 'STAB' : scope
     .replace(/^global-/, '')
     .replace(/-/g, ' ');
+};
+
+const formatModifierEffect = (
+  modifier: {
+    id: string;
+    scope: string | { type?: string; types?: string[]; moveTag?: string; };
+    multiplier: number;
+  },
+): string => {
+  const scopeLabel = formatModifierScope(modifier.scope);
+  const isDamageTakenReduction = modifier.multiplier < 1 && (
+    modifier.scope === 'global-def'
+      || modifier.scope === 'global-spd'
+      || modifier.scope === 'global-both'
+      || modifier.scope === 'super-effective-taken'
+      || modifier.scope === 'full-hp-taken'
+      || (typeof modifier.scope !== 'string' && modifier.id.includes('-taken-'))
+  );
+
+  if (!isDamageTakenReduction) {
+    return `${scopeLabel} ×${modifier.multiplier}`;
+  }
+
+  if (modifier.scope === 'global-def') {
+    return `physical damage ×${modifier.multiplier} taken`;
+  }
+
+  if (modifier.scope === 'global-spd') {
+    return `special damage ×${modifier.multiplier} taken`;
+  }
+
+  if (modifier.scope === 'global-both') {
+    return `damage ×${modifier.multiplier} taken`;
+  }
+
+  return `${scopeLabel} damage ×${modifier.multiplier} taken`;
 };
 
 export const HackmonsSpreadEstimate = ({
@@ -121,6 +158,20 @@ export const HackmonsSpreadEstimate = ({
     pokemonId,
   }));
 
+  const applyModifier = (modifier: typeof inferredModifiers[number]['modifier']) => {
+    if (modifier.slot === 'item') {
+      updatePokemon({
+        dirtyItem: modifier.representative as ItemName,
+      }, 'HackmonsSpreadEstimate:Modifier:onPress()');
+    }
+
+    if (modifier.slot === 'ability') {
+      updatePokemon({
+        dirtyAbility: modifier.representative as AbilityName,
+      }, 'HackmonsSpreadEstimate:Modifier:onPress()');
+    }
+  };
+
   return (
     <section
       className={cx(styles.container, className)}
@@ -173,9 +224,13 @@ export const HackmonsSpreadEstimate = ({
               className={cx(styles.modifier, {
                 [styles.possible]: !modifier.adopted,
               })}
+              role="button"
+              tabIndex={0}
+              onClick={() => applyModifier(modifier.modifier)}
+              onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && applyModifier(modifier.modifier)}
             >
               {modifier.adopted ? 'Likely' : 'Possible'}
-              {`: ${formatModifierScope(modifier.modifier.scope)} ×${modifier.modifier.multiplier} ${modifier.modifier.slot}`}
+              {`: ${formatModifierEffect(modifier.modifier)} ${modifier.modifier.slot}`}
               {` (${modifier.modifier.representative})`}
             </span>
           ))}

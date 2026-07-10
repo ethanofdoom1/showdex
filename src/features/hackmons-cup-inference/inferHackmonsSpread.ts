@@ -474,6 +474,38 @@ const formatModifierScope = (
   return scope === 'stab' ? 'STAB' : scope;
 };
 
+const formatModifierEffect = (
+  modifier: HackmonsModifierClass,
+): string => {
+  const scopeLabel = formatModifierScope(modifier.scope);
+  const isDamageTakenReduction = modifier.multiplier < 1 && (
+    modifier.scope === 'global-def'
+      || modifier.scope === 'global-spd'
+      || modifier.scope === 'global-both'
+      || modifier.scope === 'super-effective-taken'
+      || modifier.scope === 'full-hp-taken'
+      || (typeof modifier.scope !== 'string' && modifier.id.includes('-taken-'))
+  );
+
+  if (!isDamageTakenReduction) {
+    return `${scopeLabel} ×${modifier.multiplier}`;
+  }
+
+  if (modifier.scope === 'global-def') {
+    return `physical damage ×${modifier.multiplier} taken`;
+  }
+
+  if (modifier.scope === 'global-spd') {
+    return `special damage ×${modifier.multiplier} taken`;
+  }
+
+  if (modifier.scope === 'global-both') {
+    return `damage ×${modifier.multiplier} taken`;
+  }
+
+  return `${scopeLabel} damage ×${modifier.multiplier} taken`;
+};
+
 const blankSpread = (value: number): Showdown.StatsTable => StatNames.reduce((output, stat) => {
   output[stat] = value;
   return output;
@@ -3125,7 +3157,7 @@ export const inferHackmonsSpread = (
           ] : []),
           ...(inferredModifiers.map((modifier) => (
             `${modifier.adopted ? 'Likely' : 'Possible'} hidden ${modifier.modifier.slot}: `
-              + `${formatModifierScope(modifier.modifier.scope)} ×${modifier.modifier.multiplier} `
+              + `${formatModifierEffect(modifier.modifier)} `
               + `(${modifier.modifier.examples.join(' / ')}).`
           ))),
         ],
