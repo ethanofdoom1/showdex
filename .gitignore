@@ -11,6 +11,7 @@ yarn-error.*
 Thumbs.db
 AGENTS.md
 CLAUDE.md
+.agents
 .tmp
 .claude
 sprint.md
