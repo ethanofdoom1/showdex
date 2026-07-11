@@ -78,6 +78,21 @@ export interface HackmonsInferredModifier {
   relation: 'attacker' | 'defender';
   supportingEventIds: string[];
   corroboration?: string[];
+
+  /**
+   * The nature/IV/EV spread the search converged on when this modifier was assumed true, rather than
+   * the published estimate's spread -- which, while the modifier is unconfirmed, compensates for it
+   * via free stat investment (e.g. maxing SpDef to explain damage Ice Scales would otherwise account
+   * for). Selecting this modifier in the UI should apply this spread alongside the ability/item, so
+   * the two stay coherent instead of leaving the compensating assumption stale.
+   *
+   * @since 1.3.0
+   */
+  candidateSpread?: {
+    nature: Showdown.PokemonNature;
+    ivs: Showdown.StatsTable;
+    evs: Showdown.StatsTable;
+  };
 }
 
 export interface HackmonsInferenceFieldSnapshot {
