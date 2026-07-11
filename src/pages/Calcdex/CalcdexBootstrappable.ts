@@ -15,6 +15,7 @@ import {
   CalcdexPlayerKeys as AllPlayerKeys,
 } from '@showdex/interfaces/calc';
 import { syncBattle } from '@showdex/redux/actions';
+import { traceHackmonsLatency } from '@showdex/features/hackmons-cup-inference/latencyTrace';
 import { type RootDispatch, calcdexSlice, hellodexSlice } from '@showdex/redux/store';
 import {
   clonePlayerSideConditions,
@@ -334,6 +335,11 @@ export const MixinCalcdexBootstrappable = <
 
       // note: syncBattle() is no longer async, but since it's still wrapped in an async thunky,
       // we're keeping the `void` to keep TypeScript happy lol (`void` does nothing here btw)
+      traceHackmonsLatency('bootstrapScheduled', {
+        battleId: this.battle.id,
+        stepQueueLength,
+        directDamageCount: (this.battle.stepQueue || []).filter((step) => step.startsWith('|-damage|') && !step.includes('|[from]')).length,
+      });
       void (Adapter.store.dispatch as RootDispatch)(syncBattle({
         battle: this.battle,
         request: this.battleRequest,

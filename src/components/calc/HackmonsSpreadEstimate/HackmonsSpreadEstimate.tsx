@@ -4,6 +4,7 @@ import { type AbilityName, type ItemName } from '@smogon/calc';
 import { Button } from '@showdex/components/ui';
 import { PokemonStatNames } from '@showdex/consts/dex';
 import { calcdexSlice, useDispatch } from '@showdex/redux/store';
+import { traceHackmonsLatency } from '@showdex/features/hackmons-cup-inference/latencyTrace';
 import { useCalcdexPokeContext } from '../CalcdexPokeContext';
 import styles from './HackmonsSpreadEstimate.module.scss';
 
@@ -116,7 +117,7 @@ export const HackmonsSpreadEstimate = ({
   // auto-apply the estimate the first time it appears for a given mon (once per battle), so the
   // default guess populates without the user having to press Apply
   React.useEffect(() => {
-    if (!isOpponent || !estimate || !pokemonId) {
+    if (!isOpponent || !estimate || !pokemonId || document.documentElement.hasAttribute('data-showdex-hackmons-suppress-estimate-apply')) {
       return;
     }
 
@@ -129,6 +130,36 @@ export const HackmonsSpreadEstimate = ({
     autoAppliedEstimates.add(key);
     applyEstimate();
   }, [estimate, isOpponent, pokemonId, state.battleId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  React.useEffect(() => {
+    if (!isOpponent || !estimate || !pokemonId || !pokemon?.speciesForme) {
+      return;
+    }
+
+    const eventCount = inference?.events.length || 0;
+    const estimateEvents = JSON.stringify((estimate.matches || []).map((match) => ({
+      eventId: match.eventId,
+      turn: match.turn,
+      moveName: match.moveName,
+      observedDamage: match.observedDamage,
+      medianDamage: match.medianDamage,
+      rollRange: match.rollRange,
+      distance: match.distance,
+      error: match.error,
+      outlier: match.outlier,
+      explainedBy: match.explainedBy,
+      ko: match.ko,
+    })));
+    const modifierEvents = JSON.stringify(estimate.inferredModifiers || []);
+
+    traceHackmonsLatency('estimateRendered', {
+      battleId: state.battleId,
+      calcdexId: pokemonId,
+      eventCount,
+      payloadSignature: JSON.stringify({ eventCount, estimateEvents, modifierEvents }),
+      modifiers: modifierEvents,
+    });
+  }, [estimate, inference?.events.length, isOpponent, pokemon?.speciesForme, pokemonId, state.battleId]);
 
   if (!isOpponent || !estimate || !pokemon?.speciesForme) {
     return null;

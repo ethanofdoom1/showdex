@@ -28,6 +28,7 @@ import {
   syncBattle,
   SyncBattleActionType,
 } from '@showdex/redux/actions';
+import { traceHackmonsLatency } from '@showdex/features/hackmons-cup-inference/latencyTrace';
 import { cloneBattleState, countActivePlayers, sanitizeField } from '@showdex/utils/battle';
 import { calcMaxPokemon, calcPokemonCalcdexId } from '@showdex/utils/calc';
 import { env, nonEmptyObject } from '@showdex/utils/core';
@@ -891,6 +892,7 @@ export const calcdexSlice = createSlice({
       }
 
       state[battleId] = action.payload;
+      traceHackmonsLatency('reduxPublished', { battleId });
 
       l.debug(
         'DONE', SyncBattleActionType, 'from', '@showdex/redux/actions/syncBattle()',
