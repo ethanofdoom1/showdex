@@ -2278,6 +2278,7 @@ const searchModifierHypotheses = (
       adopted: false,
       relation,
       supportingEventIds: supportIds,
+      candidateSpread: { nature: candidate.nature, ivs: candidate.ivs, evs: candidate.evs },
     };
 
     // A1 (feasibility-only adoption) assumes outlier-magnitude evidence -- `directEvidence` classes
@@ -2476,6 +2477,7 @@ const searchSpeedModifierHypothesis = (
       adopted: false,
       relation: trigger.direction === 'faster' ? 'attacker' : 'defender',
       supportingEventIds: trigger.contributingEventIds,
+      candidateSpread: { nature: candidate.nature, ivs: candidate.ivs, evs: candidate.evs },
     };
 
     // A3: support threshold -- v1 has no speed-side corroboration source, so require >= 2 raw events

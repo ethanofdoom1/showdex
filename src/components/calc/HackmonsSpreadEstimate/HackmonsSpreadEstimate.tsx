@@ -189,18 +189,21 @@ export const HackmonsSpreadEstimate = ({
     pokemonId,
   }));
 
-  const applyModifier = (modifier: typeof inferredModifiers[number]['modifier']) => {
-    if (modifier.slot === 'item') {
-      updatePokemon({
-        dirtyItem: modifier.representative as ItemName,
-      }, 'HackmonsSpreadEstimate:Modifier:onPress()');
-    }
+  const applyModifier = (inferredModifier: typeof inferredModifiers[number]) => {
+    const { modifier, candidateSpread } = inferredModifier;
 
-    if (modifier.slot === 'ability') {
-      updatePokemon({
-        dirtyAbility: modifier.representative as AbilityName,
-      }, 'HackmonsSpreadEstimate:Modifier:onPress()');
-    }
+    updatePokemon({
+      // re-coheres the guessed spread with the modifier being selected -- e.g. Ice Scales halving
+      // special damage taken removes the need for the max-SpDef assumption that was only compensating
+      // for it being unconfirmed, so that compensation shouldn't linger once the modifier is applied
+      ...(candidateSpread ? {
+        nature: candidateSpread.nature,
+        ivs: { ...pokemon?.ivs, ...candidateSpread.ivs },
+        evs: { ...pokemon?.evs, ...candidateSpread.evs },
+      } : null),
+      ...(modifier.slot === 'item' ? { dirtyItem: modifier.representative as ItemName } : null),
+      ...(modifier.slot === 'ability' ? { dirtyAbility: modifier.representative as AbilityName } : null),
+    }, 'HackmonsSpreadEstimate:Modifier:onPress()');
   };
 
   return (
@@ -257,8 +260,8 @@ export const HackmonsSpreadEstimate = ({
               })}
               role="button"
               tabIndex={0}
-              onClick={() => applyModifier(modifier.modifier)}
-              onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && applyModifier(modifier.modifier)}
+              onClick={() => applyModifier(modifier)}
+              onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && applyModifier(modifier)}
             >
               {modifier.adopted ? 'Likely' : 'Possible'}
               {`: ${formatModifierEffect(modifier.modifier)} ${modifier.modifier.slot}`}
