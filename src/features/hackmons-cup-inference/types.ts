@@ -169,6 +169,13 @@ export interface HackmonsInferenceEvent {
   speedOrderSuppressed?: boolean;
 
   /**
+   * Whether the attacker was Dynamaxed when this move was used. A literal Max move can occur in
+   * Hackmons Cup's random move pool at its placeholder power, so this must come from the log state
+   * rather than the move name alone.
+   */
+  attackerDynamaxed?: boolean;
+
+  /**
    * Raw per-hit damage values for this move use, in landing order. Populated alongside the
    * aggregated `damage` total; used to detect Parental Bond's distinctive 2-hit (~100% + ~25%)
    * shape on a move that isn't a real dex multi-hit move (no `-hitcount` line, so `multiHit` is

@@ -1,6 +1,7 @@
 import {
   type AbilityName,
   type ItemName,
+  type MoveName,
   type ShowdexCalcMods,
   calculate,
 } from '@smogon/calc';
@@ -19,7 +20,8 @@ import {
 } from '@showdex/utils/calc';
 import { formatId } from '@showdex/utils/core';
 import { logger, runtimer } from '@showdex/utils/debug';
-import { getGenDexForFormat } from '@showdex/utils/dex';
+import { getGenDexForFormat, getMaxMove } from '@showdex/utils/dex';
+import { isInferenceFormat } from './isInferenceFormat';
 import {
   type HackmonsDamageMatch,
   type HackmonsDamageOutlier,
@@ -819,10 +821,42 @@ function resolveEventRelation(
   return null;
 }
 
+const resolveEventMoveName = (
+  state: CalcdexBattleState,
+  event: HackmonsInferenceEvent,
+  attacker?: CalcdexPokemon,
+): MoveName => {
+  const dex = getGenDexForFormat(state.format);
+  const loggedMove = dex?.moves.get(formatId(event.moveName) as never);
+
+  if (!event.attackerDynamaxed || !loggedMove?.isMax) {
+    return event.moveName;
+  }
+
+  const pokemon = attacker || findPokemonByLogName(
+    state,
+    event.attackerName,
+    event.attackerKey,
+    event.attackerId,
+  )?.pokemon;
+
+  return pokemon?.moves?.find((moveName) => {
+    const move = dex?.moves.get(formatId(moveName) as never);
+
+    return !!move?.maxMove
+      && !move.isMax
+      && getMaxMove(moveName, {
+        speciesForme: pokemon.speciesForme,
+        ability: pokemon.dirtyAbility || pokemon.ability,
+      }) === event.moveName;
+  }) || event.moveName;
+};
+
 const getMoveData = (
   state: CalcdexBattleState,
   event: HackmonsInferenceEvent,
-) => getGenDexForFormat(state.format)?.moves.get(formatId(event.moveName) as never) as {
+  attacker?: CalcdexPokemon,
+) => getGenDexForFormat(state.format)?.moves.get(formatId(resolveEventMoveName(state, event, attacker)) as never) as {
   category?: Showdown.MoveCategory;
   priority?: number;
   type?: Showdown.TypeName;
@@ -1028,6 +1062,7 @@ const evaluateCandidateEvent = (
       // same idea for Fury Cutter/Rollout's consecutive-use power scaling & Rollout's Defense Curl combo
       moveRepeatCount: event.attackerMoveRepeatCount || 0,
       defenseCurled: !!event.attackerDefenseCurled,
+      useMax: !!event.attackerDynamaxed,
     } : applyInferencePokemonAssumptions(applyEventPokemonSnapshot(state.format, {
       ...attackerMatch.pokemon,
       boosts: cloneBoostSnapshot(event.attackerBoosts),
@@ -1035,6 +1070,7 @@ const evaluateCandidateEvent = (
       hitCounter: event.attackerHitCounter || 0,
       moveRepeatCount: event.attackerMoveRepeatCount || 0,
       defenseCurled: !!event.attackerDefenseCurled,
+      useMax: !!event.attackerDynamaxed,
     }, event.attackerSnapshot));
     const defenderCandidate: CalcdexPokemon = relation === 'defender' ? {
       ...applyInferencePokemonAssumptions(applyEventPokemonSnapshot(
@@ -1073,7 +1109,7 @@ const evaluateCandidateEvent = (
         state.format,
         state.gameType,
         attackerWithEventHp,
-        event.moveName,
+        context.moveName,
         defenderCandidate,
       );
 
@@ -1104,13 +1140,20 @@ const evaluateCandidateEvent = (
           ...attackerWithEventHp,
           moveOverrides: {
             ...attackerWithEventHp.moveOverrides,
-            [event.moveName]: {
-              ...attackerWithEventHp.moveOverrides?.[event.moveName],
+            [context.moveName]: {
+              ...attackerWithEventHp.moveOverrides?.[context.moveName],
+              // Max moves can be selected as ordinary Hackmons Cup moves. Their dex BP is a display
+              // placeholder, while maxMove.basePower carries the actual raw-move value (1); only a
+              // logged Dynamax state upgrades an underlying move to its normal Max BP calculation.
+              basePower: !event.attackerDynamaxed
+                && getGenDexForFormat(state.format)?.moves.get(formatId(context.moveName) as never)?.isMax
+                ? 1
+                : attackerWithEventHp.moveOverrides?.[context.moveName]?.basePower,
               alwaysCriticalHits: !!event.crit,
             },
           },
         },
-        event.moveName,
+        context.moveName,
         defenderCandidate,
         eventField,
       );
@@ -1273,6 +1316,7 @@ interface DamageEventContext {
   relation: EventRelation;
   influence: ReturnType<typeof getMoveInfluence>;
   relevantStats: Showdown.StatName[];
+  moveName: MoveName;
   eventField: CalcdexBattleField;
 }
 
@@ -1300,7 +1344,8 @@ const resolveDamageEventContext = (
     : defenderMatch?.pokemon?.calcdexId === candidatePokemon.calcdexId
       ? 'defender'
       : null;
-  const influence = getMoveInfluence(state, event);
+  const moveName = resolveEventMoveName(state, event, attackerMatch?.pokemon);
+  const influence = getMoveInfluence(state, { ...event, moveName });
   const relevantStats = new Set<Showdown.StatName>();
 
   if (influence.offensiveStat && (
@@ -1333,6 +1378,7 @@ const resolveDamageEventContext = (
     relation,
     influence,
     relevantStats: StatNames.filter((stat) => relevantStats.has(stat)),
+    moveName,
     eventField: applyEventFieldSnapshot(state.field, event.field),
   };
 };
@@ -2893,7 +2939,7 @@ export const inferHackmonsSpread = (
   events: HackmonsInferenceEvent[],
   ignoredEventCount: number,
 ): HackmonsInferenceMap => {
-  if (!formatId(state?.format).includes('hackmons')) {
+  if (!isInferenceFormat(state?.format)) {
     return {};
   }
 

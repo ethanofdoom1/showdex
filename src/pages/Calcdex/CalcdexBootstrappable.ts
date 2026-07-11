@@ -15,6 +15,7 @@ import {
   CalcdexPlayerKeys as AllPlayerKeys,
 } from '@showdex/interfaces/calc';
 import { syncBattle } from '@showdex/redux/actions';
+import { isInferenceFormat } from '@showdex/features/hackmons-cup-inference';
 import { traceHackmonsLatency } from '@showdex/features/hackmons-cup-inference/latencyTrace';
 import { type RootDispatch, calcdexSlice, hellodexSlice } from '@showdex/redux/store';
 import {
@@ -304,7 +305,7 @@ export const MixinCalcdexBootstrappable = <
       }
 
       const stepQueueLength = this.battle.stepQueue?.length || 0;
-      const shouldRebuildHackmonsInference = formatId(this.battleState.format).includes('hackmons')
+      const shouldRebuildHackmonsInference = isInferenceFormat(this.battleState.format)
         && stepQueueLength > 0
         && !this.battleState.hackmonsInference;
 

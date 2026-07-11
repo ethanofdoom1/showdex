@@ -25,6 +25,7 @@ interface PendingMove {
   multiHit?: boolean;
   hits?: number;
   effectiveness?: HackmonsDamageEffectiveness;
+  dynamaxed?: boolean;
   hitCounter?: number;
   moveRepeatCount?: number;
   defenseCurled?: boolean;
@@ -196,6 +197,7 @@ interface ChunkMutableState {
   hitCounterState: Map<string, number>;
   moveRepeatState: Map<string, { moveId: string; count: number; }>;
   defenseCurlState: Set<string>;
+  dynamaxedState: Set<string>;
   activeStintState: Map<string, number>;
   activeSlotStintState: Map<string, number>;
   trickRoomActive: boolean;
@@ -220,6 +222,7 @@ const createParserState = (): ChunkMutableState => ({
   // attackers who've used Defense Curl since their last switch-in -- doubles Rollout's power on top of
   // moveRepeatState's own scaling, and (unlike moveRepeatState) never resets on a miss/different move
   defenseCurlState: new Set(),
+  dynamaxedState: new Set(),
   // per-mon count of how many times it's been sent out (bumped on every switch-in) -- two of a mon's
   // moves sharing a stint but NOT sharing a moveName prove it wasn't Choice-locked during that stint
   activeStintState: new Map(),
@@ -249,6 +252,7 @@ const cloneParserState = (
   hitCounterState: new Map(state.hitCounterState),
   moveRepeatState: new Map([...state.moveRepeatState].map(([id, entry]) => [id, { ...entry }])),
   defenseCurlState: new Set(state.defenseCurlState),
+  dynamaxedState: new Set(state.dynamaxedState),
   activeStintState: new Map(state.activeStintState),
   activeSlotStintState: new Map(state.activeSlotStintState),
   trickRoomActive: state.trickRoomActive,
@@ -277,6 +281,7 @@ const processChunk = (
     hitCounterState,
     moveRepeatState,
     defenseCurlState,
+    dynamaxedState,
     activeStintState,
     activeSlotStintState,
     tailwindState,
@@ -318,6 +323,7 @@ const processChunk = (
           multiHit: pendingMove?.multiHit,
           hits: pendingMove?.hits,
           effectiveness: pendingEvent.effectiveness || pendingMove?.effectiveness || 'neutral',
+          attackerDynamaxed: !!pendingMove?.dynamaxed,
           attackerHitCounter: pendingMove?.hitCounter,
           attackerMoveRepeatCount: pendingMove?.moveRepeatCount,
           attackerDefenseCurled: pendingMove?.defenseCurled,
@@ -411,6 +417,7 @@ const processChunk = (
           attackerKey: attacker.playerKey,
           attackerName: attacker.name,
           moveName,
+          dynamaxed: dynamaxedState.has(attacker.id),
           boosts: cloneBoosts(getBoosts(boostState, attacker.id)),
           status: getStatus(statusState, attacker.id),
           hitCounter: hitCounterState.get(attacker.id) || 0,
@@ -450,6 +457,7 @@ const processChunk = (
           statusState.delete(pokemon.id);
           moveRepeatState.delete(pokemon.id);
           defenseCurlState.delete(pokemon.id);
+          dynamaxedState.delete(pokemon.id);
           activeStintState.set(pokemon.id, (activeStintState.get(pokemon.id) || 0) + 1);
           if (pokemon.slot) {
             activeSlotStintState.set(pokemon.slot, (activeSlotStintState.get(pokemon.slot) || 0) + 1);
@@ -561,6 +569,20 @@ const processChunk = (
             types: changedTypes,
             typeChanged: true,
           });
+        }
+
+        return;
+      }
+
+      if ((type === '-start' || type === '-end') && effectId(parts[3]) === 'dynamax') {
+        const pokemon = parsePokemonToken(parts[2]);
+
+        if (pokemon.id) {
+          if (type === '-start') {
+            dynamaxedState.add(pokemon.id);
+          } else {
+            dynamaxedState.delete(pokemon.id);
+          }
         }
 
         return;

@@ -20,7 +20,7 @@ import {
   type CalcdexPokemon,
   CalcdexPlayerKeys as AllPlayerKeys,
 } from '@showdex/interfaces/calc';
-import { syncHackmonsInference } from '@showdex/features/hackmons-cup-inference';
+import { isInferenceFormat, syncHackmonsInference } from '@showdex/features/hackmons-cup-inference';
 import { traceHackmonsLatency } from '@showdex/features/hackmons-cup-inference/latencyTrace';
 import { type RootState } from '@showdex/redux/store';
 import {
@@ -1411,7 +1411,7 @@ export const syncBattle = createAsyncThunk<CalcdexBattleState, SyncBattlePayload
   // only (re)run the (expensive) Hackmons inference when the battle log actually grew since the last
   // sync; otherwise carry forward the previously inferred map (already deep-cloned via cloneBattleState())
   // note: battleState.battleStepQueueLength still holds the *previous* synced length at this point
-  if (!formatId(battleState.format).includes('hackmons')) {
+  if (!isInferenceFormat(battleState.format)) {
     battleState.hackmonsInference = null;
   } else if (stepQueueLength > (battleState.battleStepQueueLength || 0) || !battleState.hackmonsInference) {
     battleState.hackmonsInference = syncHackmonsInference(battleState, battle.stepQueue || []);
