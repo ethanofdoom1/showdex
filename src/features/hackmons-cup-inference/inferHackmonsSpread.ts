@@ -2682,22 +2682,42 @@ function searchBestCandidates(
 
   const seen = new Map<string, SpreadCandidate>();
   let exhausted = false;
-  const remember = (candidate: SpreadCandidate) => {
+  const remember = (
+    nature: Showdown.PokemonNature,
+    ivs: Showdown.StatsTable,
+    evs: Showdown.StatsTable,
+  ) => {
     if (seen.size >= MaxCandidateCount) {
+      // Preserve the final score that the previous score-then-cap-check ordering performed before
+      // terminating this traversal.
+      score(nature, ivs, evs);
       exhausted = true;
       return;
     }
 
-    seen.set(candidateKey(candidate), candidate);
+    const key = candidateKey({
+      nature,
+      ivs,
+      evs,
+      score: 0,
+    });
+
+    if (seen.has(key)) {
+      return;
+    }
+
+    const candidate = score(nature, ivs, evs);
+
+    seen.set(key, candidate);
 
     if (candidate.score > best.score) {
       best = candidate;
     }
   };
 
-  remember(best);
+  seen.set(candidateKey(best), best);
 
-  PokemonNatures.forEach((nature) => remember(score(nature, best.ivs, best.evs)));
+  PokemonNatures.forEach((nature) => remember(nature, best.ivs, best.evs));
 
   for (let pass = 0; pass < 3 && !exhausted; pass++) {
     for (const stat of searchStats) {
@@ -2707,12 +2727,12 @@ function searchBestCandidates(
             break;
           }
 
-          remember(score(best.nature, { ...best.ivs, [stat]: iv }, { ...best.evs, [stat]: ev }));
+          remember(best.nature, { ...best.ivs, [stat]: iv }, { ...best.evs, [stat]: ev });
         }
       }
 
       for (const nature of PokemonNatures) {
-        remember(score(nature, best.ivs, best.evs));
+        remember(nature, best.ivs, best.evs);
       }
     }
   }
@@ -2734,7 +2754,7 @@ function searchBestCandidates(
             break;
           }
 
-          remember(score(refinedBest.nature, { ...refinedBest.ivs, [stat]: iv }, { ...refinedBest.evs, [stat]: ev }));
+          remember(refinedBest.nature, { ...refinedBest.ivs, [stat]: iv }, { ...refinedBest.evs, [stat]: ev });
         }
       }
 

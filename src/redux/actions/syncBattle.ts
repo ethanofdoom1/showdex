@@ -21,6 +21,7 @@ import {
   CalcdexPlayerKeys as AllPlayerKeys,
 } from '@showdex/interfaces/calc';
 import { syncHackmonsInference } from '@showdex/features/hackmons-cup-inference';
+import { traceHackmonsLatency } from '@showdex/features/hackmons-cup-inference/latencyTrace';
 import { type RootState } from '@showdex/redux/store';
 import {
   cloneBattleState,
@@ -122,7 +123,9 @@ export const syncBattle = createAsyncThunk<CalcdexBattleState, SyncBattlePayload
   // update (2023/07/17): turns out structuredClone() is the slowest thing ever (no surprises there tbh)
   // & therefore most be eradicated from the codebase effective immediately >:(
   // const battleState: CalcdexBattleState = structuredClone(state[battleId]);
+  traceHackmonsLatency('syncStarted', { battleId, stepQueueLength: stepQueue?.length || 0 });
   const battleState = cloneBattleState(state[battleId]);
+  traceHackmonsLatency('battleCloned', { battleId, stepQueueLength: stepQueue?.length || 0 });
 
   const stepQueueLength = stepQueue?.length || 0;
 
@@ -1412,6 +1415,7 @@ export const syncBattle = createAsyncThunk<CalcdexBattleState, SyncBattlePayload
     battleState.hackmonsInference = null;
   } else if (stepQueueLength > (battleState.battleStepQueueLength || 0) || !battleState.hackmonsInference) {
     battleState.hackmonsInference = syncHackmonsInference(battleState, battle.stepQueue || []);
+    traceHackmonsLatency('inferenceSynced', { battleId, stepQueueLength });
   }
 
   // this is important, otherwise we can't ignore re-renders of the same battle state

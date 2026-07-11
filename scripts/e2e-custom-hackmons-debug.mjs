@@ -174,6 +174,19 @@ const scenarios = {
     ],
   },
 
+  // Baseline-only latency scenario. Both teams deliberately use neutral, revealed-by-absence
+  // Pressure/Leftovers and disjoint damaging moves; the trace mode suppresses estimate application.
+  latency: {
+    suppressEstimateApply: true,
+    teams: {
+      a: teamA('252 HP / 252 Atk', 'Adamant', ['Waterfall', 'Recover']),
+      b: teamB('252 HP / 252 Atk', 'Adamant', ['Earthquake', 'Recover']),
+    },
+    plannedTurns: Array.from({ length: 14 }, (_, index) => (
+      index % 2 ? { a: 'Recover', b: 'Earthquake' } : { a: 'Waterfall', b: 'Recover' }
+    )),
+  },
+
   // Illusion (Zoroark) -> disguised-stint damage events must be remapped onto the revealed Zoroark
   // (or quarantined), never left poisoning the innocent copied teammate. Choreography (copied-mon-out-
   // before-reveal hypothesis): T1 the disguised Zoroark (shown as "Mew") deals Night Slash damage while
@@ -1846,6 +1859,80 @@ const applyVisibleEstimate = async (page) => {
   return true;
 };
 
+const installLatencyTrace = async (page) => page.evaluate(() => {
+  const root = document.documentElement;
+  const trace = {
+    samples: [],
+    ignoredTransitions: [],
+    progressTimeoutCount: 0,
+    directDamageCount: 0,
+    transitionIndex: null,
+    pending: null,
+  };
+
+  root.setAttribute('data-showdex-hackmons-latency-trace', '');
+  root.setAttribute('data-showdex-hackmons-suppress-estimate-apply', '');
+  window.__showdexHackmonsLatencyTrace = trace;
+
+  document.addEventListener('showdex-hackmons-latency-trace', ({ detail }) => {
+    if (detail.stage === 'bootstrapScheduled') {
+      if (detail.directDamageCount > trace.directDamageCount) {
+        trace.directDamageCount = detail.directDamageCount;
+        trace.pending = {
+          transitionIndex: trace.transitionIndex,
+          opponentCalcdexId: null,
+          inputStepQueueLength: detail.stepQueueLength,
+          inputEventSequence: detail.directDamageCount,
+          stageTimestamps: { damageObserved: detail.time, bootstrapScheduled: detail.time },
+        };
+        const pending = trace.pending;
+        setTimeout(() => {
+          if (trace.pending !== pending) return;
+          trace.progressTimeoutCount++;
+          trace.ignoredTransitions.push({ ...pending, progressTimedOut: true });
+          trace.pending = null;
+        }, 10000);
+      } else if (detail.stepQueueLength) {
+        trace.ignoredTransitions.push({ stepQueueLength: detail.stepQueueLength, time: detail.time });
+      }
+    }
+
+    if (trace.pending && detail.stage !== 'estimateRendered') {
+      trace.pending.stageTimestamps[detail.stage] = detail.time;
+      return;
+    }
+
+    if (!trace.pending || detail.stage !== 'estimateRendered' || detail.eventCount < trace.pending.inputEventSequence) {
+      return;
+    }
+
+    const pending = trace.pending;
+    pending.opponentCalcdexId = detail.calcdexId;
+    pending.resultingEstimateEventCount = detail.eventCount;
+    pending.finalPayloadSignature = detail.payloadSignature;
+    pending.modifiers = detail.modifiers;
+    pending.stageTimestamps.finalPayloadObserved = detail.time;
+    const signature = detail.payloadSignature;
+
+    setTimeout(() => {
+      if (trace.pending !== pending || pending.finalPayloadSignature !== signature) return;
+      pending.stageTimestamps.finalPayloadStable = performance.now();
+      pending.stableForMs = pending.stageTimestamps.finalPayloadStable - pending.stageTimestamps.finalPayloadObserved;
+      pending.totalDurationMs = pending.stageTimestamps.finalPayloadObserved - pending.stageTimestamps.damageObserved;
+      pending.estimateVisible = true;
+      pending.progressTimedOut = false;
+      trace.samples.push(pending);
+      trace.pending = null;
+    }, 250);
+  });
+});
+
+const setLatencyTransition = async (page, transitionIndex) => page.evaluate((index) => {
+  window.__showdexHackmonsLatencyTrace.transitionIndex = index;
+}, transitionIndex);
+
+const readLatencyTrace = async (page) => page.evaluate(() => window.__showdexHackmonsLatencyTrace);
+
 const snapshotClient = async (page) => safePageEvaluate(page, () => ({
   username: window.app?.user?.get?.('name') || window.app?.user?.attributes?.name || null,
   currentRoom: window.app?.curRoom?.id || null,
@@ -1933,6 +2020,11 @@ try {
 
   await Promise.all(pages.map((page, index) => focusBattleRoom(page, battleIds[index])));
 
+  if (scenario.suppressEstimateApply) {
+    await installLatencyTrace(pages[0]);
+    await pages[1].evaluate(() => document.documentElement.setAttribute('data-showdex-hackmons-suppress-estimate-apply', ''));
+  }
+
   console.log('Battle rooms:', battleIds);
 
   // resolve team preview for both sides directly -- the planned-turn loop below (which normally sends
@@ -1969,6 +2061,10 @@ try {
     // rather than racing it and crashing with requestType=undefined
     await Promise.all(pages.map((page, index) => waitForRequestPresent(page, battleIds[index])));
 
+    if (scenarioName === 'latency') {
+      await setLatencyTransition(pages[0], turnIndex + 1);
+    }
+
     const actions = await Promise.all([
       choosePlannedAction(pages[0], plan.a),
       choosePlannedAction(pages[1], plan.b),
@@ -1997,7 +2093,7 @@ try {
     console.log(`After planned turn ${turnIndex + 1}:`);
     console.log(JSON.stringify(snapshot, null, 2));
 
-    if (snapshot.estimateVisible && snapshot.estimateExcerpt && !appliedEstimates.has(snapshot.estimateExcerpt)) {
+    if (!scenario.suppressEstimateApply && snapshot.estimateVisible && snapshot.estimateExcerpt && !appliedEstimates.has(snapshot.estimateExcerpt)) {
       const applied = await applyVisibleEstimate(pages[0]);
 
       if (applied) {
@@ -2074,6 +2170,20 @@ try {
 
   console.log('Final custom Hackmons debug snapshot:');
   console.log(JSON.stringify(finalSnapshot, null, 2));
+
+  if (scenarioName === 'latency') {
+    const latencyTrace = await readLatencyTrace(pages[0]);
+    console.log(`eventToEstimateLatencyRun ${JSON.stringify({
+      samples: latencyTrace.samples,
+      ignoredTransitions: latencyTrace.ignoredTransitions,
+      progressTimeoutCount: latencyTrace.progressTimeoutCount,
+      finalSnapshot: {
+        estimateVisible: finalSnapshot.estimateVisible,
+        modifiers: finalSnapshot.backendModifiers,
+        damageMismatches: finalSnapshot.damageMismatches,
+      },
+    })}`);
+  }
 
   if (scenarioName === 'temporary') {
     const failedChecks = finalSnapshot.temporaryEventChecks.filter((check) => !check.ok);
