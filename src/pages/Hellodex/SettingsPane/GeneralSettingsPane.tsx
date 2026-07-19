@@ -318,6 +318,22 @@ export const GeneralSettingsPane = ({
           readOnly
         /> */}
 
+        <Field<ShowdexSettings['developerMode']>
+          name="developerMode"
+          component={Switch}
+          className={cx(styles.field, styles.switchField)}
+          label={t('showdex.developerMode.label') as React.ReactNode}
+          tooltip={(
+            <Trans
+              t={t}
+              i18nKey="showdex.developerMode.tooltip"
+              parent="div"
+              className={styles.tooltipContent}
+              shouldUnescape
+            />
+          )}
+        />
+
         {
           special &&
           <>

@@ -62,6 +62,8 @@ export const PokeStats = ({
     field,
   } = state;
 
+  const isChampions = format?.includes('champions');
+
   const honkdexSettings = useHonkdexSettings();
   const colorScheme = useColorScheme();
   const randomUuid = useRandomUuid();
@@ -94,7 +96,7 @@ export const PokeStats = ({
       || (!defaultShowBehavior && lockedVisibilities.includes('base'))
   );
 
-  const showIvsRow = !!pokemon?.speciesForme && (
+  const showIvsRow = !!pokemon?.speciesForme && !isChampions && (
     forceShowGenetics
       || pokemon.showGenetics
       || (!defaultShowBehavior && lockedVisibilities.includes('iv'))
@@ -113,7 +115,11 @@ export const PokeStats = ({
     || (settings?.allowIllegalSpreads === 'meta' && !legalLockedFormat(format));
 
   const totalEvs = Object.values(pokemon?.evs || {}).reduce((sum, ev) => sum + (ev || 0), 0);
-  const maxLegalEvs = env.int(format?.includes('random') ? 'calcdex-pokemon-max-legal-randoms-evs' : 'calcdex-pokemon-max-legal-evs');
+  const maxLegalEvs = isChampions
+    // randbats Champions have no total stat-point budget (only the per-stat <= 32 cap, so 6*32=192);
+    // VGC/BSS-style Champions (Flat Rules) cap the total at 66
+    ? (format?.includes('random') ? 6 * 32 : 66)
+    : env.int(format?.includes('random') ? 'calcdex-pokemon-max-legal-randoms-evs' : 'calcdex-pokemon-max-legal-evs');
   const transformedLegalEvs = pokemon?.transformedForme ? pokemon?.evs?.hp ?? 0 : 0;
 
   const defaultIv = React.useMemo(() => getDefaultSpreadValue('iv', format), [format]);
@@ -137,7 +143,7 @@ export const PokeStats = ({
 
   // should only apply the missingSpread styles if a Pokemon is loaded in
   const missingIvs = !!pokemon?.speciesForme && !Object.values(pokemon?.ivs || {}).reduce((sum, value) => sum + (value || 0), 0);
-  const missingEvs = !!pokemon?.speciesForme && !legacy && !totalEvs;
+  const missingEvs = !!pokemon?.speciesForme && !legacy && !isChampions && !totalEvs;
 
   const warningColor = settings?.nhkoColors?.[2];
   const evsWarning = missingEvs
@@ -198,7 +204,8 @@ export const PokeStats = ({
                     shouldShowBaseStats
                       && (defaultShowBehavior || !lockedVisibilities.includes('base'))
                       && t('pokedex:stats.base_other.1'),
-                    (defaultShowBehavior || !lockedVisibilities.includes('iv'))
+                    !isChampions
+                      && (defaultShowBehavior || !lockedVisibilities.includes('iv'))
                       && t(`pokedex:stats.${legacy ? 'dvs' : 'ivs'}_other.1`),
                     (!legacy || settings?.showLegacyEvs)
                       && (defaultShowBehavior || !lockedVisibilities.includes('ev'))
@@ -501,12 +508,21 @@ export const PokeStats = ({
               align="right"
               header
             >
-              <Trans
-                t={t}
-                i18nKey="poke.stats.evs.label"
-                shouldUnescape
-                components={{ smol: <span className={styles.small} /> }}
-              />
+              {isChampions ? (
+                <Trans
+                  t={t}
+                  i18nKey="poke.stats.evs.championsLabel"
+                  shouldUnescape
+                  components={{ smol: <span className={styles.small} /> }}
+                />
+              ) : (
+                <Trans
+                  t={t}
+                  i18nKey="poke.stats.evs.label"
+                  shouldUnescape
+                  components={{ smol: <span className={styles.small} /> }}
+                />
+              )}
 
               {
                 (!format?.includes('random') && totalEvs < maxLegalEvs) &&
@@ -551,17 +567,17 @@ export const PokeStats = ({
                     missingEvs && styles.warning,
                   )}
                   inputStyle={missingEvs && warningColor ? { color: warningColor } : undefined}
-                  label={t('poke.stats.evs.aria', {
+                  label={t(isChampions ? 'poke.stats.evs.championsAria' : 'poke.stats.evs.aria', {
                     stat: statLabel,
                     pokemon: friendlyPokemonName,
                   }) as string}
                   hideLabel
-                  hint={ev.toString() || '252'}
+                  hint={ev.toString() || (isChampions ? '0' : '252')}
                   fallbackValue={0}
                   min={0}
-                  max={allowIllegalSpreads ? 999 : 252}
-                  step={4}
-                  shiftStep={16}
+                  max={isChampions ? 32 : (allowIllegalSpreads ? 999 : 252)}
+                  step={isChampions ? 1 : 4}
+                  shiftStep={isChampions ? 4 : 16}
                   loop
                   loopStepsOnly
                   clearOnFocus

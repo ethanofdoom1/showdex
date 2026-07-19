@@ -58,6 +58,7 @@ export const Tooltip = ({
   style,
   arrowClassName,
   arrowStyle,
+  appendTo = () => document.body,
   popperOptions: {
     modifiers: popperModifiers = [],
     ...popperOptions
@@ -73,10 +74,13 @@ export const Tooltip = ({
   const colorScheme = useColorScheme();
 
   // animations (required for "headless" Tippy -- i.e., we're not using the default plug-n-play version)
+  // note: the [] deps arg is REQUIRED -- w/o it, react-spring v10 treats the factory result as continuous
+  // props and re-applies `springProps.hide` on every render via its internal flushUpdate loop, silently
+  // animating the tooltip back to opacity=0/scale=0.9 right after handleMount's show animation finishes
   const [animationStyles, springApi] = useSpring(() => ({
-    ...springProps.hide,
+    from: springProps.hide,
     config: springConfig,
-  }));
+  }), []);
 
   const handleMount: TippyProps['onMount'] = (instance) => {
     onMount?.(instance);
@@ -105,6 +109,7 @@ export const Tooltip = ({
   return (
     <Tippy
       {...props}
+      appendTo={appendTo}
       animation
       popperOptions={{
         strategy: 'fixed',

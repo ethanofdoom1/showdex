@@ -29,6 +29,7 @@ import { type CalcdexMoveOverride, type CalcdexPokemon } from '@showdex/interfac
 import { useColorScheme, useColorTheme, useGlassyTerrain } from '@showdex/redux/store';
 import { detectToggledMove } from '@showdex/utils/battle';
 import { calcMoveHitBasePowers, getMoveOverrideDefaults, hasMoveOverrides } from '@showdex/utils/calc';
+import { getDexForFormat, hasMegaForme, isMegaStone } from '@showdex/utils/dex';
 import {
   clamp,
   formatId,
@@ -125,7 +126,8 @@ export const PokeMoves = ({
 
   const showTeraToggle = !!pokemon?.speciesForme
     && !rules?.tera
-    && gen > 8;
+    && gen > 8
+    && !format?.includes('champions');
 
   const disableTeraToggle = !pokemon?.speciesForme
     || (!pokemon.teraType && !pokemon.dirtyTeraType)
@@ -141,6 +143,25 @@ export const PokeMoves = ({
     && (nationalDexFormat || (gen === 8 && !format?.includes('bdsp')));
 
   const disableMaxToggle = !pokemon?.speciesForme;
+
+  // Mega button: shows when the mon can Mega Evolve in this format (holds a Mega stone whose resulting forme
+  // exists in altFormes -- which is format-aware, e.g. Champions/NatDex), or is already Mega'd (to revert).
+  // megaForme doubles as the toggle TARGET: the Mega forme when off, or the base species when reverting.
+  const megaActive = hasMegaForme(pokemon?.speciesForme);
+  const megaItem = pokemon?.dirtyItem ?? pokemon?.item;
+  const megaStone = isMegaStone(megaItem);
+  const megaFormes = (pokemon?.altFormes || []).filter(hasMegaForme);
+  // when not Mega'd: if holding a Mega stone, target the matching Mega forme -- X/Y disambiguated by the stone's
+  // suffix (e.g. Charizardite X -> Charizard-Mega-X), else the lone Mega forme. when Mega'd: revert to the base.
+  const stoneSuffix = megaStone ? (formatId(megaItem).match(/([xy])$/)?.[1] || null) : null;
+  const megaForme = (megaActive
+    ? getDexForFormat(format)?.species.get(pokemon.speciesForme)?.baseSpecies
+    : (megaStone && megaFormes.length
+      ? (megaFormes.find((f) => (f.match(/-Mega-([XY])$/i)?.[1]?.toLowerCase() || null) === stoneSuffix) || megaFormes[0])
+      : null)
+  ) || null;
+
+  const showMegaToggle = !!pokemon?.speciesForme && !!megaForme;
 
   // nice one me 10/10
   const showFaintCounter = !!pokemon?.speciesForme && (
@@ -421,6 +442,35 @@ export const PokeMoves = ({
               useZ: false,
               useMax: !pokemon?.useMax,
             }, `${l.scope}:ToggleButton~Max:onPress()`)}
+          />
+        }
+
+        {
+          showMegaToggle &&
+          <ToggleButton
+            className={cx(
+              styles.toggleButton,
+              styles.ultButton,
+              (showTeraToggle || showZToggle || showMaxToggle) && styles.lessSpacing,
+            )}
+            label={t('poke.moves.mega.label', 'MEGA')}
+            tooltip={(
+              <Trans
+                t={t}
+                i18nKey={`poke.moves.mega.${megaActive ? '' : 'in'}activeTooltip`}
+                parent="div"
+                className={styles.descTooltip}
+                shouldUnescape
+                values={{ forme: megaForme }}
+              />
+            )}
+            tooltipDisabled={!settings?.showUiTooltips}
+            primary
+            active={megaActive}
+            disabled={!pokemon?.speciesForme}
+            onPress={() => updatePokemon({
+              speciesForme: megaForme,
+            }, `${l.scope}:ToggleButton~Mega:onPress()`)}
           />
         }
 

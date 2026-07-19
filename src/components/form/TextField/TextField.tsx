@@ -56,7 +56,7 @@ export const TextField = React.forwardRef<HTMLInputElement, TextFieldProps>(({
       offset={[0, 10]}
       delay={[0, 50]}
       trigger="focusin"
-      disabled={disabled && !tooltip}
+      disabled={disabled || !tooltip}
     >
       <div
         className={cx(

@@ -98,6 +98,19 @@ export interface CalcdexMatchupResult {
 const l = logger('@showdex/utils/calc/calcSmogonMatchup()');
 
 /**
+ * Last `result.desc()` logged for a given matchup, keyed by `battleId:playerKey:attacker:move:defender`.
+ *
+ * * Only exists to throttle the info-level matchup log below to *outcome-changes*.
+ * * Cleared wholesale once it grows past `MaxTrackedMatchupDescs` -- worst case we re-log a matchup we've
+ *   already seen, which beats leaking a key per matchup for the lifetime of the tab.
+ *
+ * @since 1.4.1
+ */
+const prevMatchupDescs: Record<string, string> = {};
+
+const MaxTrackedMatchupDescs = 1000;
+
+/**
  * Verifies that the arguments look *decently* good, then yeets them to `calculate()` from `@smogon/calc`.
  *
  * * If using this within a React component, opt to use the `useSmogonMatchup()` hook instead.
@@ -221,6 +234,36 @@ export const calcSmogonMatchup = (
     matchup.koChance = formatMatchupNhko(result, settings?.calcdex?.nhkoLabels);
     matchup.koColor = getMatchupNhkoColor(result, settings?.calcdex?.nhkoColors);
 
+    // concise + prod-captured (info+) so a *wrong* calc -- not just a thrown one -- can be reconstructed from a
+    // bug report. result.desc() spells out every modifier the calc actually applied (boosts, tera, ability, item,
+    // the defender's spread), which is exactly what fingerprints a fraud-calc: an Unburden Hawlucha wearing a
+    // phantom Quark Drive boost says so right in the string. previously only *exceptions* were captured at info,
+    // so a calc that succeeded but lied left no trace & needed a screenshot to diagnose.
+    // ---
+    // throttled to outcome-changes since this runs for every move of every Pokemon on every state change; the fat
+    // object dump stays at debug (dev console + developerMode-only capture).
+    const matchupDesc = matchup.description?.raw;
+
+    if (matchupDesc) {
+      const matchupKey = [
+        state?.battleId || '?',
+        playerKey,
+        playerPokemon.speciesForme,
+        playerMove,
+        opponentPokemon.speciesForme,
+      ].join(':');
+
+      if (prevMatchupDescs[matchupKey] !== matchupDesc) {
+        if (Object.keys(prevMatchupDescs).length > MaxTrackedMatchupDescs) {
+          Object.keys(prevMatchupDescs).forEach((key) => { delete prevMatchupDescs[key]; });
+        }
+
+        prevMatchupDescs[matchupKey] = matchupDesc;
+
+        l.info('Calc:', matchupDesc);
+      }
+    }
+
     /* l.debug(
       'Calculated damage for', playerMove, 'from', playerPokemon.speciesForme, 'against', opponentPokemon.speciesForme,
       '\n', 'gameType', gameType, 'gen', dex.num,
@@ -236,8 +279,15 @@ export const calcSmogonMatchup = (
     // which is separate from 'N/A' damage (e.g., status moves).
     // typically occurs when the opposing Pokemon is immune to the damaging move,
     // like using Earthquake against a Lando-T, which is immune due to its Flying type.
-    if (__DEV__ && !(error as Error)?.message?.includes('=== 0')) {
-      l.error(
+    if (!(error as Error)?.message?.includes('=== 0')) {
+      // concise + prod-captured (warn -> info+) so a real fraud-calc exception surfaces in a bug report
+      l.warn(
+        'Calc exception:', (error as Error)?.message || String(error),
+        '|', playerMove, 'from', playerPokemon?.speciesForme || '???', 'vs', opponentPokemon?.speciesForme || '???',
+      );
+
+      // the full object dump stays at debug -> dev console + developerMode-only capture
+      l.debug(
         'Exception while calculating the damage for', playerMove,
         'from', playerPokemon.speciesForme, 'against', opponentPokemon.speciesForme,
         '\n', 'gameType', gameType, 'gen', dex.num,
@@ -248,7 +298,6 @@ export const calcSmogonMatchup = (
         '\n', 'opponent', opponent,
         '\n', 'field', field,
         '\n', 'settings', settings,
-        '\n', '(you\'ll only see this error in __DEV__)',
         '\n', error,
       );
     }

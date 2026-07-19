@@ -10,6 +10,8 @@ import {
   BootdexPreactAdapter,
   CalcdexClassicBootstrapper,
   CalcdexPreactBootstrapper,
+  DevdexClassicBootstrapper,
+  DevdexPreactBootstrapper,
   HellodexClassicBootstrapper,
   HellodexPreactBootstrapper,
   HonkdexClassicBootstrapper,
@@ -21,6 +23,8 @@ import {
 } from '@showdex/pages';
 import { env } from '@showdex/utils/core';
 import { logger, wtf } from '@showdex/utils/debug';
+// note: deep import (NOT the debug barrel) on purpose — wiring lives outside the logger->teledex path
+import { wireTeledexSink } from '@showdex/utils/debug/teledex/teledexSink';
 import { detectClassicHost, detectPreactHost } from '@showdex/utils/host';
 import '@showdex/styles/global.scss';
 
@@ -68,6 +72,9 @@ window.__SHOWDEX_HOST = (detectPreactHost(window) && 'preact')
   || (detectClassicHost(window) && 'classic')
   || null;
 
+// inject the teledex IndexedDB/flush backend once, up-front (statically, so it stays in the single bundle)
+wireTeledexSink();
+
 // note: don't inline await, otherwise, there'll be a race condition with the login
 // (also makes the Hellodex not appear immediately when Showdown first opens)
 void (async () => {
@@ -82,6 +89,7 @@ void (async () => {
       );
 
       BootdexManager.register('calcdex', CalcdexPreactBootstrapper);
+      BootdexManager.register('devdex', DevdexPreactBootstrapper);
       BootdexManager.register('hellodex', HellodexPreactBootstrapper);
       BootdexManager.register('honkdex', HonkdexPreactBootstrapper);
       BootdexManager.register('notedex', NotedexPreactBootstrapper);
@@ -92,12 +100,14 @@ void (async () => {
       new HellodexPreactBootstrapper().run();
       new HonkdexPreactBootstrapper().run();
       new NotedexPreactBootstrapper().run();
+      new DevdexPreactBootstrapper().run();
 
       break;
     }
 
     case 'classic': {
       BootdexManager.register('calcdex', CalcdexClassicBootstrapper);
+      BootdexManager.register('devdex', DevdexClassicBootstrapper);
       BootdexManager.register('hellodex', HellodexClassicBootstrapper);
       BootdexManager.register('honkdex', HonkdexClassicBootstrapper);
       BootdexManager.register('notedex', NotedexClassicBootstrapper);
@@ -108,6 +118,7 @@ void (async () => {
       new HellodexClassicBootstrapper().run();
       new HonkdexClassicBootstrapper().run();
       new NotedexClassicBootstrapper().run();
+      new DevdexClassicBootstrapper().run();
 
       break;
     }
