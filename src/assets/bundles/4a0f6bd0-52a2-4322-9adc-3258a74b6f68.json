@@ -1,0 +1,2523 @@
+{
+  "ok": true,
+  "status": [
+    200,
+    "OK"
+  ],
+  "ntt": "presets",
+  "payload": {
+    "Venusaur": {
+      "Sun Sleep Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Modest",
+        "ability": "Chlorophyll",
+        "item": "Focus Sash",
+        "moves": [
+          "Leaf Storm",
+          "Sludge Bomb",
+          "Earth Power",
+          "Sleep Powder"
+        ]
+      },
+      "Bulky Mega Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 2
+        },
+        "nature": "Modest",
+        "ability": "Chlorophyll",
+        "item": "Venusaurite",
+        "moves": [
+          "Energy Ball",
+          "Sludge Bomb",
+          "Earth Power",
+          "Giga Drain"
+        ]
+      }
+    },
+    "Charizard": {
+      "Fast Offense Mega Y": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Modest",
+        "ability": "Solar Power",
+        "item": "Charizardite Y",
+        "moves": [
+          "Heat Wave",
+          "Weather Ball",
+          "Solar Beam",
+          "Air Slash"
+        ]
+      },
+      "DD Mega X": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Adamant",
+        "ability": "Blaze",
+        "item": "Charizardite X",
+        "moves": [
+          "Flare Blitz",
+          "Dragon Claw",
+          "Thunder Punch",
+          "Dragon Dance"
+        ]
+      }
+    },
+    "Blastoise": {
+      "Mega Attacker under Tailwind": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Modest",
+        "ability": "Rain Dish",
+        "item": "Blastoisinite",
+        "moves": [
+          "Water Spout",
+          "Aura Sphere",
+          "Dark Pulse",
+          "Ice Beam"
+        ]
+      }
+    },
+    "Raichu": {
+      "HP/Def Invested Mega Y": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 11,
+          "spa": 0,
+          "spd": 0,
+          "spe": 23
+        },
+        "nature": "Timid",
+        "item": "Raichunite Y",
+        "moves": [
+          "Zap Cannon",
+          "Focus Blast",
+          "Fake Out",
+          "Grass Knot"
+        ]
+      },
+      "Rising Voltage Mega X": {
+        "level": 50,
+        "evs": {
+          "hp": 30,
+          "atk": 0,
+          "def": 1,
+          "spa": 10,
+          "spd": 0,
+          "spe": 25
+        },
+        "nature": "Timid",
+        "item": "Raichunite X",
+        "moves": [
+          "Rising Voltage",
+          "Volt Tackle",
+          "Fake Out",
+          "Volt Switch"
+        ]
+      }
+    },
+    "Clefable": {
+      "Physically Defensive Sitrus": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 32,
+          "spa": 0,
+          "spd": 2,
+          "spe": 0
+        },
+        "nature": "Bold",
+        "ability": "Unaware",
+        "item": "Sitrus Berry",
+        "moves": [
+          "Moonblast",
+          "Icy Wind",
+          "Follow Me",
+          "Helping Hand"
+        ]
+      }
+    },
+    "Ninetales": {
+      "Fake Tears Scarf Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 1,
+          "atk": 0,
+          "def": 1,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Modest",
+        "item": "Choice Scarf",
+        "moves": [
+          "Heat Wave",
+          "Solar Beam",
+          "Overheat",
+          "Fake Tears"
+        ]
+      }
+    },
+    "Gengar": {
+      "Offensive Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Gengarite",
+        "moves": [
+          "Shadow Ball",
+          "Sludge Bomb",
+          "Icy Wind",
+          "Protect"
+        ]
+      },
+      "Bulkier Perish Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 9,
+          "spa": 1,
+          "spd": 1,
+          "spe": 23
+        },
+        "nature": "Timid",
+        "item": "Gengarite",
+        "moves": [
+          "Shadow Ball",
+          "Sludge Bomb",
+          "Perish Song",
+          "Disable"
+        ]
+      },
+      "Sash Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Focus Sash",
+        "moves": [
+          "Shadow Ball",
+          "Sludge Bomb",
+          "Icy Wind",
+          "Protect"
+        ]
+      }
+    },
+    "Kangaskhan": {
+      "Silk Scarf Last Resort": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 32,
+          "def": 2,
+          "spa": 0,
+          "spd": 0,
+          "spe": 0
+        },
+        "nature": "Adamant",
+        "item": "Silk Scarf",
+        "moves": [
+          "Fake Out",
+          "Last Resort"
+        ]
+      },
+      "Fast Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "item": "Kangaskhanite",
+        "moves": [
+          "Fake Out",
+          "Double-Edge",
+          "Sucker Punch",
+          "Drain Punch"
+        ]
+      },
+      "Bulky Max Attack Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 2
+        },
+        "nature": "Adamant",
+        "item": "Kangaskhanite",
+        "moves": [
+          "Fake Out",
+          "Double-Edge",
+          "Sucker Punch",
+          "Drain Punch"
+        ]
+      }
+    },
+    "Starmie": {
+      "Rain Offense Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "ability": "Natural Cure",
+        "item": "Starminite",
+        "moves": [
+          "Liquidation",
+          "Zen Headbutt",
+          "Ice Spinner",
+          "Aqua Jet"
+        ]
+      }
+    },
+    "Gyarados": {
+      "Max Speed DD Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "item": "Gyaradosite",
+        "moves": [
+          "Waterfall",
+          "Lash Out",
+          "Earthquake",
+          "Dragon Dance"
+        ]
+      },
+      "Sitrus Disruption": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 32,
+          "def": 2,
+          "spa": 0,
+          "spd": 0,
+          "spe": 0
+        },
+        "nature": "Adamant",
+        "item": "Sitrus Berry",
+        "moves": [
+          "Waterfall",
+          "Ice Fang",
+          "Taunt",
+          "Thunder Wave"
+        ]
+      }
+    },
+    "Aerodactyl": {
+      "Sash Tailwind Support": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "item": "Focus Sash",
+        "moves": [
+          "Rock Slide",
+          "Dual Wingbeat",
+          "Tailwind",
+          "Taunt"
+        ]
+      },
+      "Offensive Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "item": "Aerodactylite",
+        "moves": [
+          "Rock Slide",
+          "Dual Wingbeat",
+          "Ice Fang",
+          "Iron Head"
+        ]
+      }
+    },
+    "Dragonite": {
+      "Special Coverage Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Dragoninite",
+        "moves": [
+          "Dragon Pulse",
+          "Thunderbolt",
+          "Heat Wave",
+          "Ice Beam"
+        ]
+      },
+      "Special Rain Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Modest",
+        "item": "Dragoninite",
+        "moves": [
+          "Draco Meteor",
+          "Hurricane",
+          "Extreme Speed",
+          "Thunder"
+        ]
+      },
+      "Dragon Fang Physical Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Adamant",
+        "item": "Dragon Fang",
+        "moves": [
+          "Dragon Claw",
+          "Low Kick",
+          "Extreme Speed",
+          "Scale Shot"
+        ]
+      }
+    },
+    "Meganium": {
+      "Bulky Offense Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 2
+        },
+        "nature": "Modest",
+        "item": "Meganiumite",
+        "moves": [
+          "Solar Beam",
+          "Dazzling Gleam",
+          "Weather Ball",
+          "Earth Power"
+        ]
+      }
+    },
+    "Ariados": {
+      "FedeCampo's GC 1st Sitrus Support": {
+        "level": 50,
+        "evs": {
+          "hp": 31,
+          "atk": 0,
+          "def": 20,
+          "spa": 0,
+          "spd": 15,
+          "spe": 0
+        },
+        "nature": "Impish",
+        "ability": "Insomnia",
+        "item": "Sitrus Berry",
+        "moves": [
+          "Knock Off",
+          "Rage Powder",
+          "String Shot",
+          "Protect"
+        ]
+      }
+    },
+    "Politoed": {
+      "Scarf Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Choice Scarf",
+        "moves": [
+          "Weather Ball",
+          "Icy Wind",
+          "Muddy Water",
+          "Ice Beam"
+        ]
+      },
+      "Bulky Support": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 32,
+          "spa": 0,
+          "spd": 2,
+          "spe": 0
+        },
+        "nature": "Calm",
+        "item": "Leftovers",
+        "moves": [
+          "Weather Ball",
+          "Icy Wind",
+          "Helping Hand",
+          "Perish Song"
+        ]
+      }
+    },
+    "Steelix": {
+      "Specially Defensive Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 6,
+          "def": 1,
+          "spa": 0,
+          "spd": 27,
+          "spe": 0
+        },
+        "nature": "Brave",
+        "item": "Steelixite",
+        "moves": [
+          "High Horsepower",
+          "Heavy Slam",
+          "Body Press",
+          "Wide Guard"
+        ]
+      }
+    },
+    "Scizor": {
+      "Offense Mega on Rain": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 2,
+          "spe": 0
+        },
+        "nature": "Adamant",
+        "item": "Scizorite",
+        "moves": [
+          "Bullet Punch",
+          "Bug Bite",
+          "Close Combat",
+          "Swords Dance"
+        ]
+      }
+    },
+    "Tyranitar": {
+      "Scarf Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "item": "Choice Scarf",
+        "moves": [
+          "Rock Slide",
+          "Knock Off",
+          "Ice Punch",
+          "Low Kick"
+        ]
+      },
+      "Bulky Max Attack Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 2,
+          "spe": 0
+        },
+        "nature": "Adamant",
+        "item": "Tyranitarite",
+        "moves": [
+          "Rock Slide",
+          "Knock Off",
+          "High Horsepower",
+          "Low Kick"
+        ]
+      },
+      "DD Max Speed Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "item": "Tyranitarite",
+        "moves": [
+          "Rock Slide",
+          "Knock Off",
+          "Dragon Dance",
+          "Protect"
+        ]
+      }
+    },
+    "Pelipper": {
+      "Sash Tailwind Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Modest",
+        "item": "Focus Sash",
+        "moves": [
+          "Weather Ball",
+          "Hurricane",
+          "Muddy Water",
+          "Tailwind"
+        ]
+      },
+      "Sitrus Offensive Support": {
+        "level": 50,
+        "evs": {
+          "hp": 31,
+          "atk": 0,
+          "def": 1,
+          "spa": 5,
+          "spd": 18,
+          "spe": 11
+        },
+        "nature": "Modest",
+        "item": "Sitrus Berry",
+        "moves": [
+          "Weather Ball",
+          "Hurricane",
+          "Wide Guard",
+          "Helping Hand"
+        ]
+      },
+      "Max Speed Scarf": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Choice Scarf",
+        "moves": [
+          "Weather Ball",
+          "Hurricane",
+          "Icy Wind",
+          "Muddy Water"
+        ]
+      }
+    },
+    "Gardevoir": {
+      "Bulky TR Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 2,
+          "spa": 32,
+          "spd": 0,
+          "spe": 0
+        },
+        "nature": "Modest",
+        "item": "Gardevoirite",
+        "moves": [
+          "Hyper Voice",
+          "Psyshock",
+          "Psychic",
+          "Trick Room"
+        ]
+      },
+      "Timid Scarf": {
+        "level": 50,
+        "evs": {
+          "hp": 0,
+          "atk": 0,
+          "def": 2,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Choice Scarf",
+        "moves": [
+          "Moonblast",
+          "Psyshock",
+          "Dazzling Gleam",
+          "Icy Wind"
+        ]
+      }
+    },
+    "Sableye": {
+      "Roseli Disruption": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 2,
+          "spa": 0,
+          "spd": 32,
+          "spe": 0
+        },
+        "nature": "Careful",
+        "item": "Roseli Berry",
+        "moves": [
+          "Foul Play",
+          "Fake Out",
+          "Encore",
+          "Will-O-Wisp"
+        ]
+      }
+    },
+    "Camerupt": {
+      "TR Offense Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 2,
+          "spa": 32,
+          "spd": 0,
+          "spe": 0
+        },
+        "nature": "Quiet",
+        "item": "Cameruptite",
+        "moves": [
+          "Earth Power",
+          "Heat Wave",
+          "Eruption",
+          "Ancient Power"
+        ]
+      }
+    },
+    "Torkoal": {
+      "TR Sun Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 2,
+          "spe": 0
+        },
+        "nature": "Quiet",
+        "item": "Charcoal",
+        "moves": [
+          "Eruption",
+          "Heat Wave",
+          "Weather Ball",
+          "Earth Power"
+        ]
+      }
+    },
+    "Milotic": {
+      "Lefties Bulk": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 32,
+          "spa": 0,
+          "spd": 2,
+          "spe": 0
+        },
+        "nature": "Bold",
+        "item": "Leftovers",
+        "moves": [
+          "Scald",
+          "Icy Wind",
+          "Ice Beam",
+          "Recover"
+        ]
+      }
+    },
+    "Garchomp": {
+      "Scarf Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Adamant",
+        "item": "Choice Scarf",
+        "moves": [
+          "Earthquake",
+          "Dragon Claw",
+          "Rock Slide",
+          "Stomping Tantrum"
+        ]
+      },
+      "Max Speed LOrb": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "item": "Life Orb",
+        "moves": [
+          "Earthquake",
+          "Dragon Claw",
+          "Rock Slide",
+          "Stomping Tantrum"
+        ]
+      }
+    },
+    "Mamoswine": {
+      "Sash Oblivious Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 0,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 2,
+          "spe": 32
+        },
+        "nature": "Adamant",
+        "ability": "Oblivious",
+        "item": "Focus Sash",
+        "moves": [
+          "Ice Shard",
+          "High Horsepower",
+          "Icicle Crash",
+          "Rock Slide"
+        ]
+      }
+    },
+    "Gallade": {
+      "Sash TR Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 32,
+          "def": 2,
+          "spa": 0,
+          "spd": 0,
+          "spe": 0
+        },
+        "nature": "Brave",
+        "item": "Focus Sash",
+        "moves": [
+          "Sacred Sword",
+          "Psycho Cut",
+          "Wide Guard",
+          "Trick Room"
+        ]
+      }
+    },
+    "Froslass": {
+      "Offensive Veil Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "ability": "Cursed Body",
+        "item": "Froslassite",
+        "moves": [
+          "Blizzard",
+          "Shadow Ball",
+          "Thunderbolt",
+          "Aurora Veil"
+        ]
+      }
+    },
+    "Rotom-Wash": {
+      "Wisp Support": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 2
+        },
+        "nature": "Modest",
+        "item": "Sitrus Berry",
+        "moves": [
+          "Hydro Pump",
+          "Thunderbolt",
+          "Volt Switch",
+          "Will-O-Wisp"
+        ]
+      },
+      "Scarf Electroweb": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Choice Scarf",
+        "moves": [
+          "Hydro Pump",
+          "Electroweb",
+          "Volt Switch",
+          "Trick"
+        ]
+      }
+    },
+    "Rotom-Heat": {
+      "Scarf Electroweb": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Choice Scarf",
+        "moves": [
+          "Overheat",
+          "Electroweb",
+          "Volt Switch",
+          "Trick"
+        ]
+      },
+      "Wisp Support": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 2
+        },
+        "nature": "Modest",
+        "item": "Sitrus Berry",
+        "moves": [
+          "Overheat",
+          "Thunderbolt",
+          "Volt Switch",
+          "Will-O-Wisp"
+        ]
+      }
+    },
+    "Rotom-Mow": {
+      "Scarf Electroweb": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Choice Scarf",
+        "moves": [
+          "Leaf Storm",
+          "Electroweb",
+          "Volt Switch",
+          "Thunderbolt"
+        ]
+      }
+    },
+    "Excadrill": {
+      "Max Attack Sand Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 0,
+          "atk": 32,
+          "def": 2,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Adamant",
+        "item": "Focus Sash",
+        "moves": [
+          "High Horsepower",
+          "Iron Head",
+          "Rock Slide",
+          "Earthquake"
+        ]
+      },
+      "Max Speed Mega Option": {
+        "level": 50,
+        "evs": {
+          "hp": 0,
+          "atk": 32,
+          "def": 2,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "item": "Excadrite",
+        "moves": [
+          "High Horsepower",
+          "Iron Head",
+          "Rock Slide",
+          "Earthquake"
+        ]
+      }
+    },
+    "Whimsicott": {
+      "Sash Tailwind Support": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Focus Sash",
+        "moves": [
+          "Moonblast",
+          "Tailwind",
+          "Encore",
+          "Protect"
+        ]
+      }
+    },
+    "Vanilluxe": {
+      "Scarf Ice Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 1,
+          "atk": 0,
+          "def": 1,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Choice Scarf",
+        "moves": [
+          "Blizzard",
+          "Freeze-Dry",
+          "Icy Wind",
+          "Sheer Cold"
+        ]
+      }
+    },
+    "Golurk": {
+      "TR Offense Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 2,
+          "spe": 0
+        },
+        "nature": "Brave",
+        "ability": "No Guard",
+        "item": "Golurkite",
+        "moves": [
+          "Headlong Rush",
+          "Poltergeist",
+          "Ice Punch",
+          "Drain Punch"
+        ]
+      }
+    },
+    "Hydreigon": {
+      "Scarf Coverage Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Modest",
+        "item": "Choice Scarf",
+        "moves": [
+          "Dark Pulse",
+          "Draco Meteor",
+          "Earth Power",
+          "Flamethrower"
+        ]
+      }
+    },
+    "Delphox": {
+      "Fast Offensive Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 1,
+          "atk": 0,
+          "def": 1,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "ability": "Blaze",
+        "item": "Delphoxite",
+        "moves": [
+          "Heat Wave",
+          "Psychic",
+          "Psyshock",
+          "Dazzling Gleam"
+        ]
+      }
+    },
+    "Talonflame": {
+      "Sharp Beak TW Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "item": "Sharp Beak",
+        "moves": [
+          "Flare Blitz",
+          "Brave Bird",
+          "Dual Wingbeat",
+          "Tailwind"
+        ]
+      },
+      "Yurine's Korea Cup 2nd Mixed Charcoal": {
+        "level": 50,
+        "evs": {
+          "hp": 8,
+          "atk": 1,
+          "def": 0,
+          "spa": 30,
+          "spd": 0,
+          "spe": 27
+        },
+        "nature": "Naive",
+        "item": "Charcoal",
+        "moves": [
+          "Overheat",
+          "Brave Bird",
+          "Protect",
+          "Tailwind"
+        ]
+      },
+      "Itemless Acrobatics": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "moves": [
+          "Flare Blitz",
+          "Acrobatics",
+          "Protect",
+          "Tailwind"
+        ]
+      }
+    },
+    "Vivillon": {
+      "Scarf Rain Dance Support": {
+        "level": 50,
+        "evs": {
+          "hp": 0,
+          "atk": 0,
+          "def": 24,
+          "spa": 5,
+          "spd": 5,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "ability": "Compound Eyes",
+        "item": "Choice Scarf",
+        "moves": [
+          "Hurricane",
+          "Sleep Powder",
+          "Tailwind",
+          "Rain Dance"
+        ]
+      },
+      "Sash Rage Powder": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "ability": "Compound Eyes",
+        "item": "Focus Sash",
+        "moves": [
+          "Hurricane",
+          "Pollen Puff",
+          "Sleep Powder",
+          "Rage Powder"
+        ]
+      }
+    },
+    "Floette-Eternal": {
+      "Max Speed Mega Attacker": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Floettite",
+        "moves": [
+          "Moonblast",
+          "Dazzling Gleam",
+          "Light of Ruin",
+          "Protect"
+        ]
+      },
+      "Calm Mind Mega Sweeper": {
+        "level": 50,
+        "evs": {
+          "hp": 26,
+          "atk": 0,
+          "def": 2,
+          "spa": 25,
+          "spd": 0,
+          "spe": 13
+        },
+        "nature": "Modest",
+        "item": "Floettite",
+        "moves": [
+          "Moonblast",
+          "Dazzling Gleam",
+          "Draining Kiss",
+          "Calm Mind"
+        ]
+      }
+    },
+    "Aegislash": {
+      "Spell Tag Physical": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 2,
+          "spe": 0
+        },
+        "nature": "Brave",
+        "item": "Spell Tag",
+        "moves": [
+          "Poltergeist",
+          "Shadow Sneak",
+          "Iron Head",
+          "Sacred Sword"
+        ]
+      },
+      "Lefties Wide Guard Special": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 2,
+          "spe": 0
+        },
+        "nature": "Quiet",
+        "item": "Leftovers",
+        "moves": [
+          "Shadow Ball",
+          "Flash Cannon",
+          "Wide Guard",
+          "King's Shield"
+        ]
+      }
+    },
+    "Sylveon": {
+      "Fairy Feather Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 2
+        },
+        "nature": "Modest",
+        "item": "Fairy Feather",
+        "moves": [
+          "Hyper Voice",
+          "Hyper Beam",
+          "Quick Attack",
+          "Mystical Fire"
+        ]
+      }
+    },
+    "Incineroar": {
+      "Balanced Bulk Sitrus": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 14,
+          "spa": 0,
+          "spd": 20,
+          "spe": 0
+        },
+        "nature": "Careful",
+        "item": "Sitrus Berry",
+        "moves": [
+          "Flare Blitz",
+          "Darkest Lariat",
+          "Fake Out",
+          "Parting Shot"
+        ]
+      }
+    },
+    "Primarina": {
+      "Mystic Water Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 2
+        },
+        "nature": "Modest",
+        "item": "Mystic Water",
+        "moves": [
+          "Hyper Voice",
+          "Moonblast",
+          "Dazzling Gleam",
+          "Ice Beam"
+        ]
+      }
+    },
+    "Kommo-o": {
+      "Omni Boost Lefties Sweeper": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Modest",
+        "item": "Leftovers",
+        "moves": [
+          "Clanging Scales",
+          "Aura Sphere",
+          "Vacuum Wave",
+          "Clangorous Soul"
+        ]
+      },
+      "Iron Defense Body Press": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 32,
+          "spa": 0,
+          "spd": 0,
+          "spe": 2
+        },
+        "nature": "Bold",
+        "item": "Leftovers",
+        "moves": [
+          "Body Press",
+          "Flamethrower",
+          "Draco Meteor",
+          "Iron Defense"
+        ]
+      }
+    },
+    "Corviknight": {
+      "Full Bulk TW Support": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 32,
+          "spa": 0,
+          "spd": 2,
+          "spe": 0
+        },
+        "nature": "Impish",
+        "item": "Leftovers",
+        "moves": [
+          "Brave Bird",
+          "Body Press",
+          "Roost",
+          "Tailwind"
+        ]
+      },
+      "Bulk Up Sitrus": {
+        "level": 50,
+        "evs": {
+          "hp": 20,
+          "atk": 24,
+          "def": 3,
+          "spa": 0,
+          "spd": 1,
+          "spe": 18
+        },
+        "nature": "Adamant",
+        "item": "Sitrus Berry",
+        "moves": [
+          "Brave Bird",
+          "Body Press",
+          "Iron Head",
+          "Bulk Up"
+        ]
+      }
+    },
+    "Hatterene": {
+      "Fairy Feather Trick Room": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 2,
+          "spa": 32,
+          "spd": 0,
+          "spe": 0
+        },
+        "nature": "Quiet",
+        "item": "Fairy Feather",
+        "moves": [
+          "Psychic",
+          "Dazzling Gleam",
+          "Mystical Fire",
+          "Trick Room"
+        ]
+      }
+    },
+    "Dragapult": {
+      "Physical Sash Wisp": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "item": "Focus Sash",
+        "moves": [
+          "Dragon Darts",
+          "Phantom Force",
+          "Psychic Fangs",
+          "Will-O-Wisp"
+        ]
+      }
+    },
+    "Kleavor": {
+      "Scarf Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "item": "Choice Scarf",
+        "moves": [
+          "Stone Axe",
+          "Close Combat",
+          "Rock Slide",
+          "U-turn"
+        ]
+      },
+      "Sash Adamant": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Adamant",
+        "item": "Focus Sash",
+        "moves": [
+          "Stone Axe",
+          "Close Combat",
+          "Feint",
+          "X-Scissor"
+        ]
+      }
+    },
+    "Basculegion": {
+      "Scarf Adaptability": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "ability": "Adaptability",
+        "item": "Choice Scarf",
+        "moves": [
+          "Last Respects",
+          "Wave Crash",
+          "Flip Turn",
+          "Aqua Jet"
+        ]
+      },
+      "Sash Liqudation": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Adamant",
+        "ability": "Adaptability",
+        "item": "Focus Sash",
+        "moves": [
+          "Last Respects",
+          "Liquidation",
+          "Aqua Jet",
+          "Protect"
+        ]
+      },
+      "shinde_klefki's PJCS Top 8 Sitrus": {
+        "level": 50,
+        "evs": {
+          "hp": 6,
+          "atk": 8,
+          "def": 11,
+          "spa": 0,
+          "spd": 23,
+          "spe": 18
+        },
+        "nature": "Adamant",
+        "ability": "Adaptability",
+        "item": "Sitrus Berry",
+        "moves": [
+          "Wave Crash",
+          "Last Respects",
+          "Aqua Jet",
+          "Protect"
+        ]
+      },
+      "Life Orb Adaptability": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Adamant",
+        "ability": "Adaptability",
+        "item": "Life Orb",
+        "moves": [
+          "Last Respects",
+          "Wave Crash",
+          "Aqua Jet",
+          "Protect"
+        ]
+      },
+      "Life Orb Swift Swim": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Adamant",
+        "item": "Life Orb",
+        "moves": [
+          "Last Respects",
+          "Wave Crash",
+          "Flip Turn",
+          "Aqua Jet"
+        ]
+      }
+    },
+    "Sneasler": {
+      "Offensive White Herb Unburden": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "item": "White Herb",
+        "moves": [
+          "Close Combat",
+          "Dire Claw",
+          "Fake Out",
+          "Rock Slide"
+        ]
+      }
+    },
+    "Maushold": {
+      "Chople Support": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 2,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "ability": "Friend Guard",
+        "item": "Chople Berry",
+        "moves": [
+          "Super Fang",
+          "Feint",
+          "Follow Me",
+          "Taunt"
+        ]
+      }
+    },
+    "Maushold-Four": {
+      "Chople Support": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 2,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "ability": "Friend Guard",
+        "item": "Chople Berry",
+        "moves": [
+          "Super Fang",
+          "Feint",
+          "Follow Me",
+          "Taunt"
+        ]
+      }
+    },
+    "Ceruledge": {
+      "Dawei Si's NAIC T8 Colbur Bulk Up": {
+        "level": 50,
+        "evs": {
+          "hp": 27,
+          "atk": 20,
+          "def": 18,
+          "spa": 0,
+          "spd": 1,
+          "spe": 0
+        },
+        "nature": "Adamant",
+        "item": "Colbur Berry",
+        "moves": [
+          "Bitter Blade",
+          "Shadow Sneak",
+          "Bulk Up",
+          "Protect"
+        ]
+      }
+    },
+    "Scovillain": {
+      "Bulky Moody Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 30,
+          "atk": 0,
+          "def": 18,
+          "spa": 0,
+          "spd": 18,
+          "spe": 0
+        },
+        "nature": "Calm",
+        "ability": "Moody",
+        "item": "Scovillainite",
+        "moves": [
+          "Overheat",
+          "Giga Drain",
+          "Rage Powder",
+          "Leech Seed"
+        ]
+      }
+    },
+    "Palafin": {
+      "Leftovers Bulk Up": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 2
+        },
+        "nature": "Adamant",
+        "item": "Leftovers",
+        "moves": [
+          "Jet Punch",
+          "Wave Crash",
+          "Drain Punch",
+          "Bulk Up"
+        ]
+      },
+      "Mystic Water Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 2
+        },
+        "nature": "Adamant",
+        "item": "Mystic Water",
+        "moves": [
+          "Wave Crash",
+          "Jet Punch",
+          "Flip Turn",
+          "Close Combat"
+        ]
+      }
+    },
+    "Glimmora": {
+      "Modest Sash": {
+        "level": 50,
+        "evs": {
+          "hp": 1,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 1,
+          "spe": 32
+        },
+        "nature": "Modest",
+        "item": "Focus Sash",
+        "moves": [
+          "Power Gem",
+          "Sludge Bomb",
+          "Earth Power",
+          "Energy Ball"
+        ]
+      },
+      "Fast Offense Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 1,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 1,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Glimmoranite",
+        "moves": [
+          "Power Gem",
+          "Sludge Bomb",
+          "Sludge Wave",
+          "Earth Power"
+        ]
+      }
+    },
+    "Farigiraf": {
+      "Offensive TR Sitrus": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 2,
+          "spa": 32,
+          "spd": 0,
+          "spe": 0
+        },
+        "nature": "Quiet",
+        "ability": "Armor Tail",
+        "item": "Sitrus Berry",
+        "moves": [
+          "Psychic",
+          "Twin Beam",
+          "Thunderbolt",
+          "Trick Room"
+        ]
+      },
+      "Bulky Colbur": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 22,
+          "spa": 0,
+          "spd": 12,
+          "spe": 0
+        },
+        "nature": "Bold",
+        "ability": "Armor Tail",
+        "item": "Colbur Berry",
+        "moves": [
+          "Psychic",
+          "Thunderbolt",
+          "Twin Beam",
+          "Trick Room"
+        ]
+      }
+    },
+    "Kingambit": {
+      "Black Glasses Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 2,
+          "spe": 0
+        },
+        "nature": "Adamant",
+        "item": "Black Glasses",
+        "moves": [
+          "Kowtow Cleave",
+          "Iron Head",
+          "Sucker Punch",
+          "Low Kick"
+        ]
+      },
+      "Speedy Sash": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Adamant",
+        "item": "Focus Sash",
+        "moves": [
+          "Kowtow Cleave",
+          "Iron Head",
+          "Sucker Punch",
+          "Low Kick"
+        ]
+      }
+    },
+    "Sinistcha": {
+      "Sitrus TR Redirect": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 14,
+          "spa": 0,
+          "spd": 20,
+          "spe": 0
+        },
+        "nature": "Bold",
+        "item": "Sitrus Berry",
+        "moves": [
+          "Matcha Gotcha",
+          "Shadow Ball",
+          "Rage Powder",
+          "Trick Room"
+        ]
+      }
+    },
+    "Archaludon": {
+      "Bulky Stamina Lefties": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 1,
+          "spa": 5,
+          "spd": 25,
+          "spe": 3
+        },
+        "nature": "Modest",
+        "item": "Leftovers",
+        "moves": [
+          "Electro Shot",
+          "Flash Cannon",
+          "Draco Meteor",
+          "Dragon Pulse"
+        ]
+      },
+      "Fast Stamina Chople": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Modest",
+        "item": "Chople Berry",
+        "moves": [
+          "Electro Shot",
+          "Flash Cannon",
+          "Dragon Pulse",
+          "Aura Sphere"
+        ]
+      }
+    },
+    "Ninetales-Alola": {
+      "Ice Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 1,
+          "atk": 0,
+          "def": 1,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Never-Melt Ice",
+        "moves": [
+          "Blizzard",
+          "Freeze-Dry",
+          "Icy Wind",
+          "Moonblast"
+        ]
+      },
+      "Sash Veil Encore": {
+        "level": 50,
+        "evs": {
+          "hp": 1,
+          "atk": 0,
+          "def": 1,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Focus Sash",
+        "moves": [
+          "Blizzard",
+          "Icy Wind",
+          "Aurora Veil",
+          "Encore"
+        ]
+      }
+    },
+    "Arcanine-Hisui": {
+      "Scarf Full Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 1,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 1,
+          "spe": 32
+        },
+        "nature": "Adamant",
+        "item": "Choice Scarf",
+        "moves": [
+          "Flare Blitz",
+          "Rock Slide",
+          "Extreme Speed",
+          "Head Smash"
+        ]
+      },
+      "Jolly Sash Rock Head": {
+        "level": 50,
+        "evs": {
+          "hp": 1,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 1,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "ability": "Rock Head",
+        "item": "Focus Sash",
+        "moves": [
+          "Flare Blitz",
+          "Rock Slide",
+          "Extreme Speed",
+          "Head Smash"
+        ]
+      }
+    },
+    "Typhlosion-Hisui": {
+      "Scarf Eruption": {
+        "level": 50,
+        "evs": {
+          "hp": 1,
+          "atk": 0,
+          "def": 1,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Modest",
+        "item": "Choice Scarf",
+        "moves": [
+          "Eruption",
+          "Shadow Ball",
+          "Heat Wave",
+          "Overheat"
+        ]
+      }
+    },
+    "Samurott-Hisui": {
+      "Jolly Scarf": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "item": "Choice Scarf",
+        "moves": [
+          "Sacred Sword",
+          "Aqua Cutter",
+          "Night Slash",
+          "Flip Turn"
+        ]
+      },
+      "Adamant Sash": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Adamant",
+        "item": "Focus Sash",
+        "moves": [
+          "Sacred Sword",
+          "Aqua Cutter",
+          "Night Slash",
+          "Sucker Punch"
+        ]
+      }
+    },
+    "Zoroark-Hisui": {
+      "Sash Support/Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 1,
+          "atk": 0,
+          "def": 1,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Focus Sash",
+        "moves": [
+          "Hyper Voice",
+          "Bitter Malice",
+          "Icy Wind",
+          "Psychic"
+        ]
+      }
+    },
+    "Lycanroc-Dusk": {
+      "Adamant Sash": {
+        "level": 50,
+        "evs": {
+          "hp": 1,
+          "atk": 32,
+          "def": 1,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Adamant",
+        "item": "Focus Sash",
+        "moves": [
+          "Rock Slide",
+          "Close Combat",
+          "Accelerock",
+          "Psychic Fangs"
+        ]
+      }
+    },
+    "Sceptile": {
+      "Offense Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Sceptilite",
+        "moves": [
+          "Leaf Storm",
+          "Dragon Pulse",
+          "Earth Power",
+          "Energy Ball"
+        ]
+      }
+    },
+    "Blaziken": {
+      "Physical Offense Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Adamant",
+        "item": "Blazikenite",
+        "moves": [
+          "Flare Blitz",
+          "Close Combat",
+          "Rock Slide",
+          "Detect"
+        ]
+      },
+      "Special Coaching Sash": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Focus Sash",
+        "moves": [
+          "Heat Wave",
+          "Aura Sphere",
+          "Overheat",
+          "Coaching"
+        ]
+      }
+    },
+    "Swampert": {
+      "Rain Offense Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Adamant",
+        "item": "Swampertite",
+        "moves": [
+          "Wave Crash",
+          "High Horsepower",
+          "Ice Punch",
+          "Earthquake"
+        ]
+      }
+    },
+    "Mawile": {
+      "TR Attacker Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 2,
+          "spe": 0
+        },
+        "nature": "Brave",
+        "item": "Mawilite",
+        "moves": [
+          "Play Rough",
+          "Sucker Punch",
+          "Iron Head",
+          "Rock Slide"
+        ]
+      },
+      "Tailwind Offense Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 19,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 15
+        },
+        "nature": "Adamant",
+        "ability": "Hyper Cutter",
+        "item": "Mawilite",
+        "moves": [
+          "Play Rough",
+          "Sucker Punch",
+          "Iron Head",
+          "Brick Break"
+        ]
+      }
+    },
+    "Metagross": {
+      "Jolly Offense Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "item": "Metagrossite",
+        "moves": [
+          "Iron Head",
+          "Psychic Fangs",
+          "Body Press",
+          "Ice Punch"
+        ]
+      }
+    },
+    "Staraptor": {
+      "Jolly STABs Roost Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 0,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 2,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "item": "Staraptite",
+        "moves": [
+          "Close Combat",
+          "Brave Bird",
+          "Dual Wingbeat",
+          "Roost"
+        ]
+      },
+      "Scarf Final Gambit": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 1,
+          "def": 1,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "item": "Choice Scarf",
+        "moves": [
+          "Final Gambit",
+          "Close Combat",
+          "Brave Bird",
+          "U-turn"
+        ]
+      }
+    },
+    "Pyroar": {
+      "Sun Offense Mega": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Pyroarite",
+        "moves": [
+          "Heat Wave",
+          "Overheat",
+          "Solar Beam",
+          "Protect"
+        ]
+      }
+    },
+    "Grimmsnarl": {
+      "Screens Clay Support": {
+        "level": 50,
+        "evs": {
+          "hp": 32,
+          "atk": 0,
+          "def": 13,
+          "spa": 0,
+          "spd": 21,
+          "spe": 0
+        },
+        "nature": "Careful",
+        "item": "Light Clay",
+        "moves": [
+          "Reflect",
+          "Light Screen",
+          "Spirit Break",
+          "Foul Play"
+        ]
+      }
+    },
+    "Annihilape": {
+      "Bulk Up Lefties": {
+        "level": 50,
+        "evs": {
+          "hp": 24,
+          "atk": 25,
+          "def": 8,
+          "spa": 0,
+          "spd": 7,
+          "spe": 2
+        },
+        "nature": "Adamant",
+        "item": "Leftovers",
+        "moves": [
+          "Rage Fist",
+          "Drain Punch",
+          "Bulk Up",
+          "Protect"
+        ]
+      },
+      "Scarf Offense": {
+        "level": 50,
+        "evs": {
+          "hp": 2,
+          "atk": 32,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Jolly",
+        "item": "Choice Scarf",
+        "moves": [
+          "Shadow Claw",
+          "Close Combat",
+          "U-turn",
+          "Rock Slide"
+        ]
+      }
+    },
+    "Gholdengo": {
+      "Life Orb Modest": {
+        "level": 50,
+        "evs": {
+          "hp": 7,
+          "atk": 0,
+          "def": 0,
+          "spa": 27,
+          "spd": 0,
+          "spe": 32
+        },
+        "nature": "Modest",
+        "item": "Life Orb",
+        "moves": [
+          "Make It Rain",
+          "Shadow Ball",
+          "Thunderbolt",
+          "Nasty Plot"
+        ]
+      },
+      "Timid Scarf": {
+        "level": 50,
+        "evs": {
+          "hp": 1,
+          "atk": 0,
+          "def": 0,
+          "spa": 32,
+          "spd": 1,
+          "spe": 32
+        },
+        "nature": "Timid",
+        "item": "Choice Scarf",
+        "moves": [
+          "Make It Rain",
+          "Shadow Ball",
+          "Power Gem",
+          "Steel Beam"
+        ]
+      }
+    }
+  }
+}

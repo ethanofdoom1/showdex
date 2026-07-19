@@ -2,7 +2,7 @@ import * as React from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
 import cx from 'classnames';
 import { useColorScheme } from '@showdex/redux/store';
-import { determineColorScheme } from '@showdex/utils/ui';
+import { determineColorScheme, parseHotkeyCombo } from '@showdex/utils/ui';
 import { type BaseTextFieldProps, BaseTextField } from '../TextField';
 import styles from './ValueField.module.scss';
 
@@ -246,7 +246,7 @@ export const ValueField = React.forwardRef<HTMLInputElement, ValueFieldProps>(({
 
     const currentValue = Number(input?.value ?? inputValue) || 0;
 
-    switch (handler.keys?.[0]) {
+    switch (parseHotkeyCombo(handler)) {
       case 'up': {
         handleChange(
           currentValue + Math.abs(step),

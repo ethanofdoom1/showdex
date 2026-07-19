@@ -21,7 +21,8 @@ import { Composer } from '@showdex/components/form';
 import { PageContainer, PiconRackProvider, PiconRackSortableContext } from '@showdex/components/layout';
 import { ContextMenu, useContextMenu } from '@showdex/components/ui';
 import { useCalcdexDuplicator } from '@showdex/redux/store';
-import { logger } from '@showdex/utils/debug';
+import { env } from '@showdex/utils/core';
+import { logger, teledex } from '@showdex/utils/debug';
 import { useRandomUuid } from '@showdex/utils/hooks';
 import styles from './Honkdex.module.scss';
 
@@ -184,6 +185,16 @@ export const Honkdex = ({
                 dupeCalcdex({ ...state, newId });
                 onRequestHonkdex(newId);
               }),
+            },
+          },
+          {
+            key: 'dump-teledex',
+            entity: 'item',
+            props: {
+              label: t('contextMenu.dumpBugReport', 'Dump Bug Report'),
+              icon: 'fa-bug',
+              hidden: !env.bool('teledex-enabled'),
+              onPress: hideAfter(() => void teledex.flush({ to: 'file' })),
             },
           },
           {
