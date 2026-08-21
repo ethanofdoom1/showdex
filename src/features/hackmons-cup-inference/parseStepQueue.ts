@@ -1,13 +1,16 @@
 import { type MoveName } from '@smogon/calc';
-import { PokemonInitialBoosts, PseudoWeatherMap, WeatherMap } from '@showdex/consts/dex';
+import { PokemonInitialBoosts } from '@showdex/consts/dex/stats';
+import { PseudoWeatherMap } from '@showdex/consts/dex/terrain';
+import { WeatherMap } from '@showdex/consts/dex/weather';
 import { type CalcdexPlayerKey } from '@showdex/interfaces/calc';
-import { chunkStepQueueTurns } from '@showdex/utils/battle';
-import { formatId } from '@showdex/utils/core';
+import { chunkStepQueueTurns } from '@showdex/utils/battle/chunkStepQueueTurns';
+import { formatId } from '@showdex/utils/core/formatId';
 import {
   type HackmonsDamageEffectiveness,
   type HackmonsInferenceEvent,
   type HackmonsInferenceFieldSnapshot,
   type HackmonsInferencePokemonSnapshot,
+  type HackmonsInferenceSideSnapshot,
   type HackmonsIllusionReveal,
 } from './types';
 
@@ -57,6 +60,10 @@ interface PendingDamageEvent {
   attackerStatus: Showdown.PokemonStatus | '';
   defenderStatus: Showdown.PokemonStatus | '';
   field: HackmonsInferenceFieldSnapshot;
+  attackerSide: HackmonsInferenceSideSnapshot;
+  defenderSide: HackmonsInferenceSideSnapshot;
+  attackerFaintCount: number;
+  defenderFaintCount: number;
   attackerSnapshot: HackmonsInferencePokemonSnapshot;
   defenderSnapshot: HackmonsInferencePokemonSnapshot;
   rawLine: string;
@@ -148,6 +155,11 @@ const getPokemonSnapshot = (
   pokemonId: string,
 ): HackmonsInferencePokemonSnapshot => clonePokemonSnapshot(pokemonState.get(pokemonId));
 
+// side conditions that change what the damage calc produces (screens are a flat multiplier; Tailwind
+// feeds the speed-based moves) -- everything else on a side is either hazards (excluded from the
+// calc by ShowdexCalcMods) or purely cosmetic here
+const ScreenConditions = ['reflect', 'lightscreen', 'auroraveil'];
+
 const effectId = (
   value: string,
 ): string => formatId((value || '').replace(/^(move|ability|item):\s*/i, ''));
@@ -202,6 +214,10 @@ interface ChunkMutableState {
   activeSlotStintState: Map<string, number>;
   trickRoomActive: boolean;
   tailwindState: Set<CalcdexPlayerKey>;
+  // damage-relevant side conditions per player (`'reflect'`, `'lightscreen'`, `'auroraveil'`)
+  screenState: Map<CalcdexPlayerKey, Set<string>>;
+  // running count of Pokemon fainted per player -- Supreme Overlord's "allies fainted"
+  faintState: Map<CalcdexPlayerKey, number>;
   fieldState: HackmonsInferenceFieldSnapshot;
 }
 
@@ -229,6 +245,8 @@ const createParserState = (): ChunkMutableState => ({
   activeSlotStintState: new Map(),
   trickRoomActive: false,
   tailwindState: new Set(),
+  screenState: new Map(),
+  faintState: new Map(),
   fieldState: {
     weather: null,
     terrain: null,
@@ -241,6 +259,21 @@ const createParserState = (): ChunkMutableState => ({
 // deep enough to isolate a cached snapshot from further mutation -- per-mon boost records are
 // mutated in place elsewhere (`boosts[stat] = ...`), so a shallow Map copy would let live processing
 // after this point corrupt a snapshot that's supposed to stay frozen for the next incremental resume
+const getSideSnapshot = (
+  screenState: Map<CalcdexPlayerKey, Set<string>>,
+  tailwindState: Set<CalcdexPlayerKey>,
+  playerKey?: CalcdexPlayerKey,
+): HackmonsInferenceSideSnapshot => {
+  const screens = (playerKey && screenState.get(playerKey)) || new Set<string>();
+
+  return {
+    isReflect: screens.has('reflect'),
+    isLightScreen: screens.has('lightscreen'),
+    isAuroraVeil: screens.has('auroraveil'),
+    isTailwind: !!playerKey && tailwindState.has(playerKey),
+  };
+};
+
 const cloneParserState = (
   state: ChunkMutableState,
 ): ChunkMutableState => ({
@@ -257,6 +290,8 @@ const cloneParserState = (
   activeSlotStintState: new Map(state.activeSlotStintState),
   trickRoomActive: state.trickRoomActive,
   tailwindState: new Set(state.tailwindState),
+  screenState: new Map([...state.screenState].map(([key, screens]) => [key, new Set(screens)])),
+  faintState: new Map(state.faintState),
   fieldState: cloneFieldSnapshot(state.fieldState),
 });
 
@@ -285,6 +320,8 @@ const processChunk = (
     activeStintState,
     activeSlotStintState,
     tailwindState,
+    screenState,
+    faintState,
     fieldState,
   } = state;
 
@@ -336,6 +373,10 @@ const processChunk = (
           attackerStatus: pendingEvent.attackerStatus,
           defenderStatus: pendingEvent.defenderStatus,
           field: cloneFieldSnapshot(pendingEvent.field),
+          attackerSide: { ...pendingEvent.attackerSide },
+          defenderSide: { ...pendingEvent.defenderSide },
+          attackerFaintCount: pendingEvent.attackerFaintCount,
+          defenderFaintCount: pendingEvent.defenderFaintCount,
           attackerSnapshot: clonePokemonSnapshot(pendingEvent.attackerSnapshot),
           defenderSnapshot: clonePokemonSnapshot(pendingEvent.defenderSnapshot),
           rawLine: pendingEvent.rawLine,
@@ -539,6 +580,28 @@ const processChunk = (
           } else {
             tailwindState.delete(side.playerKey);
           }
+        }
+
+        if (side.playerKey && ScreenConditions.includes(condition)) {
+          const screens = screenState.get(side.playerKey) || new Set<string>();
+
+          if (type === '-sidestart') {
+            screens.add(condition);
+          } else {
+            screens.delete(condition);
+          }
+
+          screenState.set(side.playerKey, screens);
+        }
+
+        return;
+      }
+
+      if (type === 'faint') {
+        const pokemon = parsePokemonToken(parts[2]);
+
+        if (pokemon.playerKey) {
+          faintState.set(pokemon.playerKey, (faintState.get(pokemon.playerKey) || 0) + 1);
         }
 
         return;
@@ -882,6 +945,15 @@ const processChunk = (
         return;
       }
 
+      // Some moves (notably Shed Tail) pay a fixed HP cost on the user with a bare `-damage` line.
+      // Inference events describe damage dealt to another Pokemon; keep the HP state current without
+      // treating the user's cost as stat-dependent move damage.
+      if (pendingMove.attackerId === defender.id) {
+        hpState.set(defender.id, hp.hp);
+        maxHpState.set(defender.id, maxHp);
+        return;
+      }
+
       // count this hit toward the defender's Rage Fist counter -- each individual hit of a multi-hit
       // move increments it once, since each hit gets its own `-damage` line
       hitCounterState.set(defender.id, (hitCounterState.get(defender.id) || 0) + 1);
@@ -931,6 +1003,10 @@ const processChunk = (
           attackerStatus: getStatus(statusState, pendingMove.attackerId),
           defenderStatus: getStatus(statusState, defender.id),
           field: cloneFieldSnapshot(fieldState),
+          attackerSide: getSideSnapshot(screenState, tailwindState, pendingMove.attackerKey),
+          defenderSide: getSideSnapshot(screenState, tailwindState, defender.playerKey),
+          attackerFaintCount: faintState.get(pendingMove.attackerKey) || 0,
+          defenderFaintCount: faintState.get(defender.playerKey) || 0,
           attackerSnapshot: getPokemonSnapshot(pokemonState, pendingMove.attackerId),
           defenderSnapshot: getPokemonSnapshot(pokemonState, defender.id),
           rawLine: step,

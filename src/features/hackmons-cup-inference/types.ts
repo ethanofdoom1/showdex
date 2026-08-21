@@ -103,6 +103,22 @@ export interface HackmonsInferenceFieldSnapshot {
   isGravity?: boolean;
 }
 
+/**
+ * Side conditions in effect for one player as of a given event.
+ *
+ * * Screens are a straight damage multiplier and *Tailwind* a speed one, so modelling a past event
+ *   with whatever is up RIGHT NOW (as this feature did before) silently mis-scores every event that
+ *   happened on the other side of a `-sidestart`/`-sideend`.
+ *
+ * @since 1.3.0
+ */
+export interface HackmonsInferenceSideSnapshot {
+  isReflect?: boolean;
+  isLightScreen?: boolean;
+  isAuroraVeil?: boolean;
+  isTailwind?: boolean;
+}
+
 export interface HackmonsInferencePokemonSnapshot {
   types?: Showdown.TypeName[];
   typeChanged?: boolean;
@@ -178,8 +194,8 @@ export interface HackmonsInferenceEvent {
   /**
    * Raw per-hit damage values for this move use, in landing order. Populated alongside the
    * aggregated `damage` total; used to detect Parental Bond's distinctive 2-hit (~100% + ~25%)
-   * shape on a move that isn't a real dex multi-hit move (no `-hitcount` line, so `multiHit` is
-   * falsy here).
+   * shape, and as the hit count for a multi-hit move Showdown logs no `-hitcount` line for (smart
+   * targeting suppresses it, so `multiHit`/`hits` are both falsy for e.g. Dragon Darts).
    *
    * @since 1.3.0
    */
@@ -234,6 +250,18 @@ export interface HackmonsInferenceEvent {
   attackerStatus?: Showdown.PokemonStatus | '';
   defenderStatus?: Showdown.PokemonStatus | '';
   field?: HackmonsInferenceFieldSnapshot;
+  attackerSide?: HackmonsInferenceSideSnapshot;
+  defenderSide?: HackmonsInferenceSideSnapshot;
+
+  /**
+   * Number of Pokemon fainted on each side as of this event, i.e. `faintCounter`'s "allies fainted"
+   * at the time -- *Supreme Overlord* scales its damage off this and it only ever grows, so the live
+   * counter over-boosts every earlier event in the log.
+   *
+   * @since 1.3.0
+   */
+  attackerFaintCount?: number;
+  defenderFaintCount?: number;
   attackerSnapshot?: HackmonsInferencePokemonSnapshot;
   defenderSnapshot?: HackmonsInferencePokemonSnapshot;
   rawLine: string;
@@ -254,13 +282,14 @@ export interface HackmonsDamageMatch {
   moveName: MoveName;
   observedDamage: number;
   medianDamage?: number;
+  logLikelihood: number;
   distance?: number;
 
   /**
-   * Feasibility distance used by `scoreCandidate()`: `0` whenever the candidate spread can actually
+   * Feasibility distance used to identify outliers: `0` whenever the candidate spread can actually
    * produce this observation (i.e. it falls within `rollRange`), and only positive when it's
-   * genuinely unreachable by that spread. Distinct from `distance`, which centers on the median for
-   * display purposes even when the observation is already in-range.
+   * genuinely unreachable by that spread. Distinct from `distance`, which is retained for display
+   * purposes even when the observation is already in-range.
    *
    * @since 1.3.0
    */
