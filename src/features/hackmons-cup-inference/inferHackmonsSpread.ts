@@ -21,6 +21,13 @@ import {
 import { formatId } from '@showdex/utils/core';
 import { logger, runtimer } from '@showdex/utils/debug';
 import { getGenDexForFormat, getMaxMove } from '@showdex/utils/dex';
+import {
+  damageEventLogLikelihood,
+  ErrorEventLogLikelihood,
+  observedDamagePmf,
+  speedEventLogLikelihood,
+  type ObservedDamagePmfEntry,
+} from './damageLikelihood';
 import { isInferenceFormat } from './isInferenceFormat';
 import {
   type HackmonsDamageMatch,
@@ -31,6 +38,7 @@ import {
   type HackmonsInferenceEvent,
   type HackmonsInferenceMap,
   type HackmonsInferencePokemonSnapshot,
+  type HackmonsInferenceSideSnapshot,
   type HackmonsInferenceState,
   type HackmonsModifierClass,
   type HackmonsModifierSlot,
@@ -41,10 +49,10 @@ const DefaultIv = 15;
 const DefaultEv = 128;
 const CandidateIvs = Array.from({ length: 32 }, (_, i) => i);
 const CoordinateCandidateEvs = [0, 32, 64, 96, DefaultEv, 160, 192, 224, 252];
-const MaxScoredEventsPerCategory = 3;
+const MaxDamageContextGroups = 48;
 const MaxCandidateCount = 4000;
 const NeutralNature = 'Serious' as Showdown.PokemonNature;
-const CacheVersion = 'bounded-search-v23';
+const CacheVersion = 'likelihood-fit-v24';
 
 // keyed per defending Pokemon `calcdexId` + that mon's event signature, so a new battle log step
 // only re-searches the mon(s) whose events actually changed (see inferHackmonsSpread())
@@ -57,15 +65,15 @@ const SpeedDependentMoves = new Set(['electroball', 'gyroball']);
 // whole point) so a reveal still starts a fresh roll cache instead of reusing rolls computed against a
 // stale non-candidate ability/item, same poisoned-cache hazard `participantSignature` already guards
 // against for `InferenceCache` above
-const RollCacheStore = new Map<string, Map<string, number[]>>();
-const MaxRollCacheEntriesPerMon = 20_000;
+interface CachedDamageRolls {
+  rolls: number[];
+  rawRolls?: number[];
+}
 
-// out-of-range distance must always dominate median-centering distance in scoreCandidate() -- a
-// single unit of infeasibility (an observation the candidate can't produce at all) has to outweigh
-// any possible in-range centering difference, or a "closer to median but impossible" spread could
-// still beat a "further from median but possible" one
-const RangeInfeasibilityWeight = 1e6;
-const ModifierComplexityPenalty = 6 * RangeInfeasibilityWeight;
+type RollCache = Map<string, CachedDamageRolls>;
+
+const RollCacheStore = new Map<string, RollCache>();
+const MaxRollCacheEntriesPerMon = 20_000;
 
 const l = logger('@showdex/features/hackmons-cup-inference/inferHackmonsSpread()');
 const lSearchCandidates = logger('@showdex/features/hackmons-cup-inference/inferHackmonsSpread():searchBestCandidates()');
@@ -693,6 +701,22 @@ const medianDamageRoll = (
     : (sorted[middle - 1] + sorted[middle]) / 2;
 };
 
+const medianDamagePmf = (
+  pmf: ObservedDamagePmfEntry[],
+): number => {
+  let cumulative = 0;
+
+  for (const entry of pmf) {
+    cumulative += entry.p;
+
+    if (cumulative >= 0.5) {
+      return entry.value;
+    }
+  }
+
+  return pmf.at(-1)?.value ?? null;
+};
+
 const cloneBoostSnapshot = (
   boosts?: Partial<Showdown.StatsTableNoHp>,
 ): Showdown.StatsTableNoHp => ({
@@ -724,6 +748,37 @@ const applyEventHp = (
     dirtyHp,
   };
 };
+
+// Supreme Overlord / Last Respects scale off how many allies had fainted AT THE TIME -- a counter
+// that only grows, so the live value over-boosts every earlier event in the log
+const applyEventFaintCount = (
+  pokemon: CalcdexPokemon,
+  faintCount?: number,
+): CalcdexPokemon => (
+  typeof faintCount === 'number'
+    ? { ...pokemon, faintCounter: faintCount, dirtyFaintCounter: null }
+    : pokemon
+);
+
+// screens are a flat damage multiplier and Tailwind feeds the speed-based moves, so a past event has
+// to be calculated against the side conditions that were up when it happened, not the current ones
+const applyEventPlayerSide = (
+  player: CalcdexBattleState[CalcdexPlayerKey],
+  snapshot?: HackmonsInferenceSideSnapshot,
+): CalcdexBattleState[CalcdexPlayerKey] => (
+  player && snapshot
+    ? {
+      ...player,
+      side: {
+        ...player.side,
+        isReflect: !!snapshot.isReflect,
+        isLightScreen: !!snapshot.isLightScreen,
+        isAuroraVeil: !!snapshot.isAuroraVeil,
+        isTailwind: !!snapshot.isTailwind,
+      },
+    }
+    : player
+);
 
 const applyEventFieldSnapshot = (
   field: CalcdexBattleField,
@@ -820,6 +875,14 @@ function resolveEventRelation(
 
   return null;
 }
+
+// Showdown only logs `-hitcount` for a multi-hit move whose `smartTarget` isn't a boolean, so a
+// smart-targeting multi-hit move (Dragon Darts) lands twice with NO hit count in the log -- falling
+// back to 1 there would hand the calc a single-hit move to explain two hits' worth of observed
+// damage. The `-damage` lines actually counted for this move use are the reliable fallback.
+const resolveEventHitCount = (event: HackmonsInferenceEvent): number => (
+  event.hits || event.hitDamages?.length || 1
+);
 
 const resolveEventMoveName = (
   state: CalcdexBattleState,
@@ -979,8 +1042,9 @@ const evaluateCandidateEvent = (
   nature: Showdown.PokemonNature,
   ivs: Showdown.StatsTable,
   evs: Showdown.StatsTable,
+  candidateSpreadStats: Partial<Showdown.StatsTable>,
   context: DamageEventContext,
-  rollCache?: Map<string, number[]>,
+  rollCache?: RollCache,
   modifierOverride?: ModifierOverride,
 ): HackmonsDamageMatch => {
   if (event.eventType === 'speed') {
@@ -995,22 +1059,22 @@ const evaluateCandidateEvent = (
     moveName: event.moveName,
     observedDamage: normalizedObservedDamage,
     maxHp: event.maxHp,
+    logLikelihood: ErrorEventLogLikelihood,
     error,
   });
 
-  const dex = getGenDexForFormat(state.format);
-
-  if (!dex) {
-    return emptyMatch('missing dex');
-  }
-
   const {
+    dex,
     attackerMatch,
     defenderMatch,
     relation,
     relevantStats,
     eventField,
   } = context;
+
+  if (!dex) {
+    return emptyMatch('missing dex');
+  }
 
   if (!attackerMatch?.pokemon) {
     return emptyMatch(`attacker lookup failed ${event.attackerKey || '?'}:${event.attackerName || '(unknown)'}`);
@@ -1024,21 +1088,16 @@ const evaluateCandidateEvent = (
     return emptyMatch('candidate relation failed');
   }
 
-  const candidateSpreadStats = calcPokemonSpreadStats(state.format, {
-    ...candidatePokemon,
-    nature,
-    ivs,
-    evs,
-  });
-
   // the damage rolls for this event are a pure function of the candidate's stats that actually feed
   // the calc (everything else here -- the non-candidate Pokemon, boosts, status, field, crit, hits --
   // is fixed for a given event), so cache them across the coordinate search to skip redundant calculate()s
-  const rollKey = `${event.id}:${relation}:${modifierOverride?.id || 'none'}:${relevantStats
+  const rollKey = `${context.id}:${relation}:${modifierOverride?.id || 'none'}:${relevantStats
     .map((stat) => candidateSpreadStats?.[stat] ?? '')
     .join(',')}`;
 
-  let rolls = rollCache?.get(rollKey);
+  const cachedRolls = rollCache?.get(rollKey);
+  let rolls = cachedRolls?.rolls;
+  let rawRolls = cachedRolls?.rawRolls;
 
   if (!rolls?.length) {
     const attackerPlayer = state[attackerMatch.playerKey];
@@ -1089,7 +1148,20 @@ const evaluateCandidateEvent = (
       boosts: cloneBoostSnapshot(event.defenderBoosts),
       status: event.defenderStatus ?? defenderMatch.pokemon.status,
     }, event.defenderSnapshot));
-    const attackerWithEventHp = applyEventHp(attackerCandidate, event.attackerStartHp, event.attackerMaxHp);
+    const attackerWithEventHp = applyEventHp(
+      applyEventFaintCount(attackerCandidate, event.attackerFaintCount),
+      event.attackerStartHp,
+      event.attackerMaxHp,
+    );
+    // the defender's HP was previously left at whatever it is RIGHT NOW, several turns after this
+    // event -- wrong for anything that reads it (Multiscale, Crush Grip, Super Fang), and the reason
+    // the persistent roll cache never survived a turn: the live value is part of the context
+    // signature, so every past event re-keyed (and re-calculated) on every sync
+    const defenderWithEventHp = applyEventHp(
+      applyEventFaintCount(defenderCandidate, event.defenderFaintCount),
+      event.startHp,
+      event.maxHp,
+    );
 
     try {
       const allPlayers = ['p1', 'p2', 'p3', 'p4']
@@ -1100,8 +1172,8 @@ const evaluateCandidateEvent = (
         state.format,
         state.gameType,
         eventField,
-        attackerPlayer,
-        defenderPlayer,
+        applyEventPlayerSide(attackerPlayer, event.attackerSide),
+        applyEventPlayerSide(defenderPlayer, event.defenderSide),
         allPlayers,
       );
 
@@ -1110,7 +1182,7 @@ const evaluateCandidateEvent = (
         state.gameType,
         attackerWithEventHp,
         context.moveName,
-        defenderCandidate,
+        defenderWithEventHp,
       );
 
       if (!attacker) {
@@ -1120,9 +1192,9 @@ const evaluateCandidateEvent = (
       const smogonDefender = createSmogonPokemon(
         state.format,
         state.gameType,
-        defenderCandidate,
+        defenderWithEventHp,
         null,
-        attackerCandidate,
+        attackerWithEventHp,
       );
 
       if (!smogonDefender) {
@@ -1146,7 +1218,7 @@ const evaluateCandidateEvent = (
               // placeholder, while maxMove.basePower carries the actual raw-move value (1); only a
               // logged Dynamax state upgrades an underlying move to its normal Max BP calculation.
               basePower: !event.attackerDynamaxed
-                && getGenDexForFormat(state.format)?.moves.get(formatId(context.moveName) as never)?.isMax
+                && dex.moves.get(formatId(context.moveName) as never)?.isMax
                 ? 1
                 : attackerWithEventHp.moveOverrides?.[context.moveName]?.basePower,
               alwaysCriticalHits: !!event.crit,
@@ -1154,7 +1226,7 @@ const evaluateCandidateEvent = (
           },
         },
         context.moveName,
-        defenderCandidate,
+        defenderWithEventHp,
         eventField,
       );
 
@@ -1170,7 +1242,7 @@ const evaluateCandidateEvent = (
       // observed hit count (2, from the `-hitcount` line this ability itself causes) would disable
       // that check and fall back to a naive "2 equal-power hits" calc instead
       if (modifierOverride?.ability !== ('Parental Bond' as AbilityName)) {
-        move.hits = event.hits || 1;
+        move.hits = resolveEventHitCount(event);
       }
 
       const mods: ShowdexCalcMods = {
@@ -1179,12 +1251,19 @@ const evaluateCandidateEvent = (
         excludeEotDamage: true,
       };
 
-      rolls = convertRollsForObservedHp(
-        state,
-        extractDamageRolls(calculate(dex, attacker, smogonDefender, move, field, mods)),
-        event.maxHp,
-        smogonDefender,
-      );
+      const calculatedRolls = extractDamageRolls(calculate(dex, attacker, smogonDefender, move, field, mods));
+
+      if (event.maxHp === 100) {
+        rolls = calculatedRolls;
+        rawRolls = calculatedRolls;
+      } else {
+        rolls = convertRollsForObservedHp(
+          state,
+          calculatedRolls,
+          event.maxHp,
+          smogonDefender,
+        );
+      }
     } catch (error) {
       return emptyMatch((error as Error)?.message || `calc failed for ${event.moveName}`);
     }
@@ -1193,7 +1272,7 @@ const evaluateCandidateEvent = (
       return emptyMatch(`empty rolls for ${event.moveName}`);
     }
 
-    rollCache?.set(rollKey, rolls);
+    rollCache?.set(rollKey, { rolls, rawRolls });
 
     // now-persistent across syncs (perf audit remedy #4) -- bound an individual mon's growth over a
     // very long battle the same way RollCacheStore bounds the number of mons tracked
@@ -1202,9 +1281,17 @@ const evaluateCandidateEvent = (
     }
   }
 
-  const median = medianDamageRoll(rolls);
-  const minRoll = Math.min(...rolls);
-  const maxRoll = Math.max(...rolls);
+  const percentPmf = event.maxHp === 100
+    && rawRolls?.length
+    && typeof candidateSpreadStats.hp === 'number'
+    && candidateSpreadStats.hp > 0
+    ? observedDamagePmf(rawRolls, event.startHp ?? 0, candidateSpreadStats.hp)
+    : undefined;
+  const median = percentPmf?.length
+    ? medianDamagePmf(percentPmf)
+    : medianDamageRoll(rolls);
+  const minRoll = percentPmf?.[0]?.value ?? Math.min(...rolls);
+  const maxRoll = percentPmf?.at(-1)?.value ?? Math.max(...rolls);
 
   // a KO hit's observed damage is truncated at the defender's remaining HP -- the real roll was AT
   // LEAST the observation -- so score it one-sided (any candidate whose max roll covers the observed
@@ -1219,6 +1306,13 @@ const evaluateCandidateEvent = (
   const rangeDistance = ko
     ? Math.max(0, normalizedObservedDamage - maxRoll)
     : Math.max(0, minRoll - normalizedObservedDamage, normalizedObservedDamage - maxRoll);
+  const logLikelihood = damageEventLogLikelihood(
+    rolls,
+    normalizedObservedDamage,
+    event.crit ? 0.25 : 1,
+    ko,
+    percentPmf,
+  );
 
   return {
     eventId: event.id,
@@ -1226,6 +1320,7 @@ const evaluateCandidateEvent = (
     moveName: event.moveName,
     observedDamage: normalizedObservedDamage,
     medianDamage: median,
+    logLikelihood,
     distance: ko
       ? Math.max(0, normalizedObservedDamage - maxRoll)
       : Math.abs(median - normalizedObservedDamage),
@@ -1318,6 +1413,10 @@ interface DamageEventContext {
   relevantStats: Showdown.StatName[];
   moveName: MoveName;
   eventField: CalcdexBattleField;
+  signature: string;
+  /** Short stand-in for `signature` (see `internContextId()`), safe to use as a cache key. */
+  id: string;
+  dex: ReturnType<typeof getGenDexForFormat>;
 }
 
 interface SpeedEventContext {
@@ -1326,6 +1425,190 @@ interface SpeedEventContext {
   otherRawSpe: number;
   otherItemSpeedMultiplier: number;
 }
+
+// `hpOverridden` mirrors applyEventHp()'s own guard: when the event carries this side's HP, the
+// live hp/maxhp/dirtyHp never reach the calc, so keeping them here would only make the signature --
+// and with it the roll cache key -- churn on every turn for no modelled difference
+const damagePokemonSignature = (
+  pokemon?: CalcdexPokemon,
+  hpOverridden?: boolean,
+  faintCountOverridden?: boolean,
+): unknown[] => [
+  pokemon?.calcdexId,
+  pokemon?.source,
+  pokemon?.speciesForme,
+  pokemon?.transformedForme,
+  pokemon?.baseStats,
+  pokemon?.dirtyBaseStats,
+  pokemon?.transformedBaseStats,
+  pokemon?.level,
+  pokemon?.transformedLevel,
+  pokemon?.gender,
+  pokemon?.types,
+  pokemon?.dirtyTypes,
+  pokemon?.terastallized,
+  pokemon?.teraType,
+  pokemon?.dirtyTeraType,
+  pokemon?.ability,
+  pokemon?.dirtyAbility,
+  pokemon?.abilityToggled,
+  pokemon?.item,
+  pokemon?.dirtyItem,
+  pokemon?.nature,
+  pokemon?.moves,
+  pokemon?.moveOverrides,
+  pokemon?.spreadStats,
+  pokemon?.ivs,
+  pokemon?.evs,
+  hpOverridden ? null : pokemon?.hp,
+  hpOverridden ? null : pokemon?.maxhp,
+  hpOverridden ? null : pokemon?.dirtyHp,
+  pokemon?.status,
+  pokemon?.dirtyStatus,
+  // toxicCounter (and saltcure below it in `volatiles`) only ever feed end-of-turn damage, which
+  // ShowdexCalcMods excludes from every calc this file runs -- hashing a counter that ticks every
+  // turn but can't move a roll only churns the cache key
+  null,
+  pokemon?.boosts,
+  pokemon?.dirtyBoosts,
+  pokemon?.boostedStat,
+  pokemon?.dirtyBoostedStat,
+  faintCountOverridden ? null : pokemon?.faintCounter,
+  faintCountOverridden ? null : pokemon?.dirtyFaintCounter,
+  pokemon?.useMax,
+  pokemon?.volatiles,
+];
+
+const damageContextSignature = (
+  state: CalcdexBattleState,
+  event: HackmonsInferenceEvent,
+  context: Omit<DamageEventContext, 'signature' | 'id' | 'dex'>,
+): string => {
+  // exactly applyEventHp()'s guard, for each side
+  const hpOverridden = (hp?: number, maxHp?: number): boolean => (
+    typeof hp === 'number' && typeof maxHp === 'number' && !!maxHp
+  );
+
+  const playerSignature = (playerKey?: CalcdexPlayerKey, sideOverridden?: boolean): unknown => {
+    const player = playerKey ? state[playerKey] : null;
+    const selected = typeof player?.selectionIndex === 'number'
+      ? player.pokemon?.[player.selectionIndex]
+      : null;
+
+    return [
+      // the screens & Tailwind now come from the event, so only the rest of the side still matters
+      // here (Helping Hand, Friend Guard, the pledges, ... -- none of which are snapshotted yet)
+      sideOverridden
+        ? {
+          ...player?.side,
+          isReflect: null,
+          isLightScreen: null,
+          isAuroraVeil: null,
+          isTailwind: null,
+        }
+        : player?.side,
+      player?.selectionIndex,
+      player?.activeIndices,
+      selected?.calcdexId,
+      selected?.ability,
+      selected?.dirtyAbility,
+    ];
+  };
+
+  // createSmogonField() reads nothing but the Ruin counters off the OTHER players' sides
+  const ruinSignature = (playerKey?: CalcdexPlayerKey): unknown => {
+    const side = (playerKey ? state[playerKey] : null)?.side;
+
+    return [side?.ruinBeadsCount, side?.ruinSwordCount, side?.ruinTabletsCount, side?.ruinVesselCount];
+  };
+
+  return JSON.stringify([
+    event.attackerSlot,
+    event.attackerId,
+    event.attackerKey,
+    event.attackerName,
+    event.defenderSlot,
+    event.defenderId,
+    event.defenderKey,
+    event.defenderName,
+    event.attackerStartHp,
+    event.attackerMaxHp,
+    event.startHp,
+    event.maxHp,
+    event.attackerSide,
+    event.defenderSide,
+    event.attackerFaintCount,
+    event.defenderFaintCount,
+    !!event.crit,
+    resolveEventHitCount(event),
+    !!event.attackerDynamaxed,
+    event.attackerHitCounter || 0,
+    event.attackerMoveRepeatCount || 0,
+    !!event.attackerDefenseCurled,
+    cloneBoostSnapshot(event.attackerBoosts),
+    cloneBoostSnapshot(event.defenderBoosts),
+    event.attackerStatus || '',
+    event.defenderStatus || '',
+    event.attackerSnapshot,
+    event.defenderSnapshot,
+    context.attackerMatch?.playerKey,
+    damagePokemonSignature(
+      context.attackerMatch?.pokemon,
+      hpOverridden(event.attackerStartHp, event.attackerMaxHp),
+      typeof event.attackerFaintCount === 'number',
+    ),
+    context.defenderMatch?.playerKey,
+    damagePokemonSignature(
+      context.defenderMatch?.pokemon,
+      hpOverridden(event.startHp, event.maxHp),
+      typeof event.defenderFaintCount === 'number',
+    ),
+    context.relation,
+    context.influence,
+    context.relevantStats,
+    context.moveName,
+    context.eventField,
+    playerSignature(context.attackerMatch?.playerKey, !!event.attackerSide),
+    playerSignature(context.defenderMatch?.playerKey, !!event.defenderSide),
+    (['p1', 'p2', 'p3', 'p4'] as CalcdexPlayerKey[]).map(ruinSignature),
+  ]);
+};
+
+// the roll cache is keyed by damage-event context, and a context's `signature` is a multi-KB JSON
+// blob -- rehashing it on every one of the (candidates x contexts) roll-cache lookups was ~2/3 of
+// the search's self time. Each distinct signature is interned to a short id used in its place. Ids
+// are never reused (the counter only ever increases), so an evicted signature just misses the roll
+// cache on its next sync instead of colliding with another context's rolls
+const ContextIdStore = new Map<string, string>();
+const MaxContextIdEntries = 4096;
+let contextIdCounter = 0;
+
+const internContextId = (
+  signature: string,
+): string => {
+  const existing = ContextIdStore.get(signature);
+
+  if (existing) {
+    return existing;
+  }
+
+  const id = `c${++contextIdCounter}`;
+
+  ContextIdStore.set(signature, id);
+
+  if (ContextIdStore.size > MaxContextIdEntries) {
+    ContextIdStore.delete(ContextIdStore.keys().next().value);
+  }
+
+  return id;
+};
+
+// the same (mon, event) context is resolved from every stage of the pipeline -- event selection,
+// grouping, the phase 1 search and one re-search per modifier hypothesis -- so an event's signature
+// was being rebuilt a dozen-plus times per sync, which is what made the cost scale with a long
+// battle log. `state` doesn't change during a sync, so the resolution is memoized for the duration
+// of one inferHackmonsSpread() call and cleared on its next entry
+const DamageContextMemo = new Map<string, DamageEventContext>();
 
 // everything below is invariant across the entire coordinate-descent search for a given defending
 // Pokemon (the fuzzy roster lookups, move data/dex lookups, and field snapshot never depend on the
@@ -1337,6 +1620,13 @@ const resolveDamageEventContext = (
   event: HackmonsInferenceEvent,
   candidatePokemon: CalcdexPokemon,
 ): DamageEventContext => {
+  const memoKey = `${candidatePokemon?.calcdexId || ''}|${event.id}`;
+  const memoized = DamageContextMemo.get(memoKey);
+
+  if (memoized) {
+    return memoized;
+  }
+
   const attackerMatch = findPokemonByLogName(state, event.attackerName, event.attackerKey, event.attackerId);
   const defenderMatch = findPokemonByLogName(state, event.defenderName, event.defenderKey, event.defenderId);
   const relation: EventRelation = attackerMatch?.pokemon?.calcdexId === candidatePokemon.calcdexId
@@ -1372,7 +1662,7 @@ const resolveDamageEventContext = (
     relevantStats.add('spe');
   }
 
-  return {
+  const context: Omit<DamageEventContext, 'signature' | 'id' | 'dex'> = {
     attackerMatch,
     defenderMatch,
     relation,
@@ -1381,6 +1671,21 @@ const resolveDamageEventContext = (
     moveName,
     eventField: applyEventFieldSnapshot(state.field, event.field),
   };
+
+  const signature = damageContextSignature(state, event, context);
+  const resolved: DamageEventContext = {
+    ...context,
+    signature,
+    id: internContextId(signature),
+    // invariant for the whole search (it only depends on the format), but getGenDexForFormat()
+    // rebuilds the entire dex object on every call, so resolving it per candidate was ~14% of the
+    // search on its own
+    dex: getGenDexForFormat(state.format),
+  };
+
+  DamageContextMemo.set(memoKey, resolved);
+
+  return resolved;
 };
 
 const resolveSpeedEventContext = (
@@ -1413,34 +1718,25 @@ const resolveSpeedEventContext = (
   };
 };
 
-const evaluateCandidateSpeedEvent = (
-  state: CalcdexBattleState,
+interface CandidateSpeedValues {
+  candidateSpeed: number;
+  otherSpeed: number;
+}
+
+const resolveCandidateSpeedValues = (
   event: HackmonsInferenceEvent,
-  candidatePokemon: CalcdexPokemon,
-  nature: Showdown.PokemonNature,
-  ivs: Showdown.StatsTable,
-  evs: Showdown.StatsTable,
+  candidateSpreadStats: Partial<Showdown.StatsTable>,
   context: SpeedEventContext,
   modifierOverride?: ModifierOverride,
-): number => {
-  if (!context.samePriority) {
-    return 0;
+): CandidateSpeedValues | null => {
+  if (!context?.relation || !context.otherRawSpe) {
+    return null;
   }
 
-  if (!context.relation || !context.otherRawSpe) {
-    return 32;
-  }
-
-  const candidateSpreadStats = calcPokemonSpreadStats(state.format, {
-    ...candidatePokemon,
-    nature,
-    ivs,
-    evs,
-  });
   const candidateRawSpe = candidateSpreadStats?.spe;
 
   if (!candidateRawSpe) {
-    return 32;
+    return null;
   }
 
   const { relation, otherRawSpe, otherItemSpeedMultiplier } = context;
@@ -1455,53 +1751,112 @@ const evaluateCandidateSpeedEvent = (
     ? applySpeedModifiers(otherRawSpe, event.defenderBoosts, event.defenderStatus, otherItemSpeedMultiplier)
     : applySpeedModifiers(otherRawSpe, event.attackerBoosts, event.attackerStatus, otherItemSpeedMultiplier);
 
+  return { candidateSpeed, otherSpeed };
+};
+
+const evaluateCandidateSpeedEvent = (
+  event: HackmonsInferenceEvent,
+  candidateSpreadStats: Partial<Showdown.StatsTable>,
+  context: SpeedEventContext,
+  modifierOverride?: ModifierOverride,
+): number => {
+  if (!context?.samePriority) {
+    return 0;
+  }
+
+  const speedValues = resolveCandidateSpeedValues(
+    event,
+    candidateSpreadStats,
+    context,
+    modifierOverride,
+  );
+
+  if (!speedValues) {
+    return 32;
+  }
+
   // Showdown breaks exact speed ties by coin flip, so moving first only requires >= (not strictly >)
   // the other mon's speed -- and moving second only requires <=. Treating equality as a violation
   // (the previous +1/-1) fabricates a contradiction whenever a mon is observed on both sides of a
   // true tie, which pushes the search away from the correct Spe instead of settling on it.
-  if (relation === 'attacker') {
-    return Math.max(0, otherSpeed - candidateSpeed);
+  if (context.relation === 'attacker') {
+    return speedValues.otherSpeed - speedValues.candidateSpeed;
   }
 
-  return Math.max(0, candidateSpeed - otherSpeed);
+  return speedValues.candidateSpeed - speedValues.otherSpeed;
 };
+
+interface DamageEventGroup {
+  event: HackmonsInferenceEvent;
+  context: DamageEventContext;
+  count: number;
+}
 
 const scoreCandidate = (
   state: CalcdexBattleState,
-  events: HackmonsInferenceEvent[],
+  damageGroups: DamageEventGroup[],
+  speedEvents: HackmonsInferenceEvent[],
   defender: CalcdexPokemon,
   nature: Showdown.PokemonNature,
   ivs: Showdown.StatsTable,
   evs: Showdown.StatsTable,
-  damageContexts: Map<string, DamageEventContext>,
   speedContexts: Map<string, SpeedEventContext>,
-  rollCache?: Map<string, number[]>,
+  rollCache?: RollCache,
   modifierOverride?: ModifierOverride,
-): number => events.reduce((score, event) => {
-  if (event.eventType === 'speed') {
-    // speed is a one-sided constraint only: penalize candidates that contradict the observed turn
-    // order (too slow when they moved first, too fast when they moved second). We deliberately do NOT
-    // center Spe within the feasible range -- with a one-sided bound there is nothing to center on, and
-    // doing so fabricates an inflated point estimate. Spe is surfaced as a bound in the UI instead.
-    const boundDistance = evaluateCandidateSpeedEvent(state, event, defender, nature, ivs, evs, speedContexts.get(event.id), modifierOverride);
-    const normalizedDistance = Math.min(32, boundDistance / 4);
+): number => {
+  const candidateSpreadStats = calcPokemonSpreadStats(state.format, {
+    ...defender,
+    nature,
+    ivs,
+    evs,
+  });
+  let score = 0;
 
-    return score - (normalizedDistance * normalizedDistance + normalizedDistance);
-  }
+  speedEvents.forEach((event) => {
+    const context = speedContexts.get(event.id);
 
-  const match = evaluateCandidateEvent(state, event, defender, nature, ivs, evs, damageContexts.get(event.id), rollCache, modifierOverride);
-  const weight = event.crit ? 0.25 : 1;
-  const rangeDistance = match?.rangeDistance ?? 8;
-  const rangeCost = rangeDistance * rangeDistance + rangeDistance;
+    if (!context?.samePriority) {
+      return;
+    }
 
-  // median-centering only discriminates *within* an already-feasible range (RangeInfeasibilityWeight
-  // guarantees it can never outweigh a single unit of infeasibility) and is skipped entirely for KO
-  // hits, whose truncated observation isn't a real target to center on
-  const centerDistance = match?.ko ? 0 : (match?.distance ?? 0);
-  const centerCost = centerDistance * centerDistance + centerDistance;
+    const speedValues = resolveCandidateSpeedValues(
+      event,
+      candidateSpreadStats,
+      context,
+      modifierOverride,
+    );
 
-  return score - (((rangeCost * RangeInfeasibilityWeight) + centerCost) * weight);
-}, 0);
+    if (!speedValues) {
+      score += ErrorEventLogLikelihood;
+      return;
+    }
+
+    const margin = context.relation === 'attacker'
+      ? speedValues.otherSpeed - speedValues.candidateSpeed
+      : speedValues.candidateSpeed - speedValues.otherSpeed;
+
+    score += speedEventLogLikelihood(margin, speedValues.candidateSpeed, speedValues.otherSpeed);
+  });
+
+  damageGroups.forEach(({ event, context, count }) => {
+    const match = evaluateCandidateEvent(
+      state,
+      event,
+      defender,
+      nature,
+      ivs,
+      evs,
+      candidateSpreadStats,
+      context,
+      rollCache,
+      modifierOverride,
+    );
+
+    score += match.logLikelihood * count;
+  });
+
+  return score;
+};
 
 const isInRangeMatch = (
   match: HackmonsDamageMatch,
@@ -1579,7 +1934,7 @@ const evaluateExtremalFeasibility = (
   event: HackmonsInferenceEvent,
   candidatePokemon: CalcdexPokemon,
   context: DamageEventContext,
-  rollCache?: Map<string, number[]>,
+  rollCache?: RollCache,
   modifierOverride?: ModifierOverride,
 ): HackmonsExtremalFeasibility => {
   const stats = context.relevantStats.filter((stat) => stat !== 'hp') as Showdown.StatNameNoHp[];
@@ -1590,6 +1945,18 @@ const evaluateExtremalFeasibility = (
 
   const high = extremalSpread(state.format, stats, 'high');
   const low = extremalSpread(state.format, stats, 'low');
+  const highSpreadStats = calcPokemonSpreadStats(state.format, {
+    ...candidatePokemon,
+    nature: high.nature,
+    ivs: high.ivs,
+    evs: high.evs,
+  });
+  const lowSpreadStats = calcPokemonSpreadStats(state.format, {
+    ...candidatePokemon,
+    nature: low.nature,
+    ivs: low.ivs,
+    evs: low.evs,
+  });
   const highMatch = evaluateCandidateEvent(
     state,
     event,
@@ -1597,6 +1964,7 @@ const evaluateExtremalFeasibility = (
     high.nature,
     high.ivs,
     high.evs,
+    highSpreadStats,
     context,
     rollCache,
     modifierOverride,
@@ -1608,6 +1976,7 @@ const evaluateExtremalFeasibility = (
     low.nature,
     low.ivs,
     low.evs,
+    lowSpreadStats,
     context,
     rollCache,
     modifierOverride,
@@ -1903,7 +2272,7 @@ const collectModifierTriggers = (
   candidatePokemon: CalcdexPokemon,
   matches: HackmonsDamageMatch[],
   contexts: Map<string, DamageEventContext>,
-  rollCache?: Map<string, number[]>,
+  rollCache?: RollCache,
 ): ModifierTrigger[] => events
   .filter((event) => event.eventType !== 'speed' && !event.crit)
   .map((event) => {
@@ -2055,7 +2424,24 @@ interface ParentalBondTrigger {
 // a plausible-looking but WRONG (low) Atk/SpA fit with no outlier warning at all. The distinguishing
 // signature is the RATIO: a real 2-hit move's hits are roughly equal, Parental Bond's second is ~25%
 // of the first -- near-impossible for an equal-power move to land by chance.
+// Parental Bond's own `onPrepareHit()` in the sim bails out on a move that's already `multihit`, so a
+// 2-hit shape on a real dex multi-hit move is the move's own doing and never this ability. Dragon
+// Darts is the case that gets here: smart targeting suppresses its `-hitcount` line, so it arrives
+// looking exactly like a Parental Bond hit pair, and a second hit truncated by the KO it caused lands
+// the ratio right inside the window below.
+const parentalBondCanApply = (
+  state: CalcdexBattleState,
+  event: HackmonsInferenceEvent,
+): boolean => {
+  const move = getGenDexForFormat(state.format)?.moves.get(formatId(event.moveName) as never) as {
+    multihit?: number | number[];
+  };
+
+  return !move?.multihit;
+};
+
 const collectParentalBondTriggers = (
+  state: CalcdexBattleState,
   events: HackmonsInferenceEvent[],
   contexts: Map<string, DamageEventContext>,
 ): ParentalBondTrigger[] => events
@@ -2064,6 +2450,7 @@ const collectParentalBondTriggers = (
       && !event.crit
       && event.hitDamages?.length === 2
       && contexts.get(event.id)?.relation === 'attacker'
+      && parentalBondCanApply(state, event)
   ))
   .filter((event) => {
     const [first, second] = event.hitDamages;
@@ -2170,9 +2557,19 @@ const evaluatePublishedMatches = (
   candidatePokemon: CalcdexPokemon,
   candidate: SpreadCandidate,
   contexts: Map<string, DamageEventContext>,
-  rollCache?: Map<string, number[]>,
+  rollCache?: RollCache,
   modifierOverride?: ModifierOverride,
-): HackmonsDamageMatch[] => events
+): HackmonsDamageMatch[] => {
+  // eslint-disable-next-line no-use-before-define
+  const selectedEvents = selectScoringEvents(state, events, candidatePokemon, contexts);
+  const candidateSpreadStats = calcPokemonSpreadStats(state.format, {
+    ...candidatePokemon,
+    nature: candidate.nature,
+    ivs: candidate.ivs,
+    evs: candidate.evs,
+  });
+
+  return selectedEvents
   .filter((event) => event.eventType !== 'speed')
   .map((event) => {
     const context = contexts.get(event.id) || resolveDamageEventContext(state, event, candidatePokemon);
@@ -2183,6 +2580,7 @@ const evaluatePublishedMatches = (
       candidate.nature,
       candidate.ivs,
       candidate.evs,
+      candidateSpreadStats,
       context,
       rollCache,
       modifierOverride,
@@ -2190,6 +2588,7 @@ const evaluatePublishedMatches = (
 
     return { ...match, outlier: outlierDirection(match) };
   });
+};
 
 const searchModifierHypotheses = (
   state: CalcdexBattleState,
@@ -2201,7 +2600,7 @@ const searchModifierHypotheses = (
   jointConflictTriggers: JointConflictTrigger[],
   parentalBondTriggers: ParentalBondTrigger[],
   typeChangeTrigger: TypeChangeTrigger | null,
-  rollCache?: Map<string, number[]>,
+  rollCache?: RollCache,
   phaseOneBest?: SpreadCandidate,
 ): { adopted?: ModifierSearchResult; possible: HackmonsInferredModifier[]; } => {
   if (!triggers.length && !jointConflictTriggers.length && !parentalBondTriggers.length && !typeChangeTrigger) {
@@ -2343,17 +2742,14 @@ const searchModifierHypotheses = (
     }
 
     evaluated.push({
-      candidate: {
-        ...candidate,
-        score: candidate.score - ModifierComplexityPenalty,
-      },
+      candidate,
       matches,
       inferredModifier: {
         ...inferredModifier,
         adopted: true,
       },
       remainingOutliers,
-      score: candidate.score - ModifierComplexityPenalty,
+      score: candidate.score,
     });
   });
 
@@ -2415,12 +2811,24 @@ const collectSpeedTrigger = (
 
   const high = extremalSpread(state.format, ['spe'], 'high');
   const low = extremalSpread(state.format, ['spe'], 'low');
+  const highSpreadStats = calcPokemonSpreadStats(state.format, {
+    ...candidatePokemon,
+    nature: high.nature,
+    ivs: high.ivs,
+    evs: high.evs,
+  });
+  const lowSpreadStats = calcPokemonSpreadStats(state.format, {
+    ...candidatePokemon,
+    nature: low.nature,
+    ivs: low.ivs,
+    evs: low.evs,
+  });
 
   const fasterInfeasible = speedEvents.filter((event) => {
     const context = speedContexts.get(event.id);
 
     return context?.relation === 'attacker'
-      && evaluateCandidateSpeedEvent(state, event, candidatePokemon, high.nature, high.ivs, high.evs, context) > 0;
+      && evaluateCandidateSpeedEvent(event, highSpreadStats, context) > 0;
   });
 
   if (fasterInfeasible.length) {
@@ -2431,7 +2839,7 @@ const collectSpeedTrigger = (
     const context = speedContexts.get(event.id);
 
     return context?.relation === 'defender'
-      && evaluateCandidateSpeedEvent(state, event, candidatePokemon, low.nature, low.ivs, low.evs, context) > 0;
+      && evaluateCandidateSpeedEvent(event, lowSpreadStats, context) > 0;
   });
 
   if (slowerInfeasible.length) {
@@ -2469,7 +2877,7 @@ const searchSpeedModifierHypothesis = (
   trigger: SpeedTrigger,
   pinnedSlots: Set<'item' | 'ability'>,
   baseOverride: ModifierOverride | undefined,
-  rollCache?: Map<string, number[]>,
+  rollCache?: RollCache,
   seedCandidate?: SpreadCandidate,
 ): { adopted?: SpeedModifierSearchResult; possible: HackmonsInferredModifier[]; } => {
   const classes = speedModifierClassesForTrigger(trigger, pinnedSlots);
@@ -2497,12 +2905,19 @@ const searchSpeedModifierHypothesis = (
       return;
     }
 
+    const candidateSpreadStats = calcPokemonSpreadStats(state.format, {
+      ...candidatePokemon,
+      nature: candidate.nature,
+      ivs: candidate.ivs,
+      evs: candidate.evs,
+    });
+
     // A1/A2: adoption must actually eliminate the contradiction, and must not introduce a NEW
     // speed-bound violation anywhere else
     const remainingSpeedViolations = speedEvents.filter((event) => {
       const context = speedContexts.get(event.id);
 
-      return evaluateCandidateSpeedEvent(state, event, candidatePokemon, candidate.nature, candidate.ivs, candidate.evs, context, modifierOverride) > 0;
+      return evaluateCandidateSpeedEvent(event, candidateSpreadStats, context, modifierOverride) > 0;
     }).length;
 
     if (remainingSpeedViolations) {
@@ -2533,9 +2948,9 @@ const searchSpeedModifierHypothesis = (
     }
 
     evaluated.push({
-      candidate: { ...candidate, score: candidate.score - ModifierComplexityPenalty },
+      candidate,
       inferredModifier: { ...inferredModifier, adopted: true },
-      score: candidate.score - ModifierComplexityPenalty,
+      score: candidate.score,
     });
   });
 
@@ -2594,20 +3009,20 @@ const candidateKey = (
 
 const scoreSpreadCandidate = (
   state: CalcdexBattleState,
-  events: HackmonsInferenceEvent[],
+  damageGroups: DamageEventGroup[],
+  speedEvents: HackmonsInferenceEvent[],
   candidatePokemon: CalcdexPokemon,
   nature: Showdown.PokemonNature,
   ivs: Showdown.StatsTable,
   evs: Showdown.StatsTable,
-  damageContexts: Map<string, DamageEventContext>,
   speedContexts: Map<string, SpeedEventContext>,
-  rollCache?: Map<string, number[]>,
+  rollCache?: RollCache,
   modifierOverride?: ModifierOverride,
 ): SpreadCandidate => ({
   nature,
   ivs: cloneSpread(ivs),
   evs: cloneSpread(evs),
-  score: scoreCandidate(state, events, candidatePokemon, nature, ivs, evs, damageContexts, speedContexts, rollCache, modifierOverride),
+  score: scoreCandidate(state, damageGroups, speedEvents, candidatePokemon, nature, ivs, evs, speedContexts, rollCache, modifierOverride),
 });
 
 const determineSearchStats = (
@@ -2655,27 +3070,80 @@ const determineSearchStats = (
 const selectScoringEvents = (
   state: CalcdexBattleState,
   events: HackmonsInferenceEvent[],
+  candidatePokemon: CalcdexPokemon,
+  damageContexts = new Map<string, DamageEventContext>(),
 ): HackmonsInferenceEvent[] => {
-  const damageEvents = events.filter((event) => event.eventType !== 'speed');
-  const speed = events.filter((event) => event.eventType === 'speed').slice(-MaxScoredEventsPerCategory);
-  const physical = damageEvents.filter((event) => getMoveInfluence(state, event).defensiveStat === 'def').slice(-MaxScoredEventsPerCategory);
-  const special = damageEvents.filter((event) => getMoveInfluence(state, event).defensiveStat === 'spd').slice(-MaxScoredEventsPerCategory);
   const selected = new Map<string, HackmonsInferenceEvent>();
 
-  [...physical, ...special, ...speed].forEach((event) => selected.set(event.id, event));
+  events.forEach((event) => selected.set(event.id, event));
 
-  if (!selected.size) {
-    damageEvents.slice(-MaxScoredEventsPerCategory).forEach((event) => selected.set(event.id, event));
-  }
+  const contextGroups = new Set<string>();
 
-  return [...selected.values()].sort((a, b) => a.turn - b.turn);
+  return [...selected.values()]
+    .sort((a, b) => a.turn - b.turn)
+    .filter((event) => {
+      if (event.eventType === 'speed') {
+        return true;
+      }
+
+      const context = damageContexts.get(event.id) || resolveDamageEventContext(state, event, candidatePokemon);
+
+      if (contextGroups.has(context.signature)) {
+        return true;
+      }
+
+      if (contextGroups.size >= MaxDamageContextGroups) {
+        return false;
+      }
+
+      contextGroups.add(context.signature);
+
+      return true;
+    });
+};
+
+const damageEventGroupKey = (
+  state: CalcdexBattleState,
+  event: HackmonsInferenceEvent,
+  context: DamageEventContext,
+): string => JSON.stringify({
+  context: context.signature,
+  observed: normalizeObservedDamage(state, event.damage || 0, event.maxHp),
+  ko: event.endHp === 0,
+  startHp: event.maxHp === 100 ? event.startHp : undefined,
+});
+
+const groupDamageEvents = (
+  state: CalcdexBattleState,
+  events: HackmonsInferenceEvent[],
+  candidatePokemon: CalcdexPokemon,
+  damageContexts: Map<string, DamageEventContext>,
+): DamageEventGroup[] => {
+  const groups = new Map<string, DamageEventGroup>();
+
+  events
+    .filter((event) => event.eventType !== 'speed')
+    .forEach((event) => {
+      const context = damageContexts.get(event.id) || resolveDamageEventContext(state, event, candidatePokemon);
+      const key = damageEventGroupKey(state, event, context);
+      const existing = groups.get(key);
+
+      if (existing) {
+        existing.count += 1;
+        return;
+      }
+
+      groups.set(key, { event, context, count: 1 });
+    });
+
+  return [...groups.values()];
 };
 
 function searchBestCandidates(
   state: CalcdexBattleState,
   events: HackmonsInferenceEvent[],
   candidatePokemon: CalcdexPokemon,
-  rollCache?: Map<string, number[]>,
+  rollCache?: RollCache,
   modifierOverride?: ModifierOverride,
   // warm-start: seed the descent from a nearby known-good candidate (e.g. phase 1's winner) instead of
   // the blank neutral spread -- every pass still sweeps the full IV/EV/nature grid per stat (see below),
@@ -2688,7 +3156,7 @@ function searchBestCandidates(
   seed?: SpreadCandidate,
 ): SpreadCandidate[] {
   const endTimer = runtimer(lSearchCandidates.scope, lSearchCandidates);
-  const scoringEvents = selectScoringEvents(state, events);
+  const scoringEvents = selectScoringEvents(state, events, candidatePokemon);
   const searchStats = determineSearchStats(state, scoringEvents, candidatePokemon);
 
   // event-level lookups/dex data are invariant across the entire search (only nature/IVs/EVs change
@@ -2705,18 +3173,21 @@ function searchBestCandidates(
     }
   });
 
+  const damageGroups = groupDamageEvents(state, scoringEvents, candidatePokemon, damageContexts);
+  const speedEvents = scoringEvents.filter((event) => event.eventType === 'speed');
+
   const score = (
     nature: Showdown.PokemonNature,
     ivs: Showdown.StatsTable,
     evs: Showdown.StatsTable,
   ): SpreadCandidate => scoreSpreadCandidate(
     state,
-    scoringEvents,
+    damageGroups,
+    speedEvents,
     candidatePokemon,
     nature,
     ivs,
     evs,
-    damageContexts,
     speedContexts,
     rollCache,
     modifierOverride,
@@ -2943,6 +3414,8 @@ export const inferHackmonsSpread = (
     return {};
   }
 
+  DamageContextMemo.clear();
+
   // seed every currently-revealed opponent Pokemon with a blank (zero-event) entry, independent of
   // whether it has any events yet -- this is what lets the Estimated Spread UI show an immediate
   // neutral-prior baseline (default IV/EV/nature, no assumptions) at the start of a battle or right
@@ -2980,7 +3453,7 @@ export const inferHackmonsSpread = (
     // per-mon memoization: only re-run the (expensive) search when *this* mon's events change, so
     // appending a battle log step doesn't recompute every opponent Pokemon from scratch each sync
     const signature = candidateEvents
-      .map((event) => `${event.id}:${event.damage || ''}:${event.maxHp || ''}:${eventSnapshotSignature(event)}`)
+      .map((event) => `${event.id}:${event.damage || ''}:${event.maxHp || ''}:${event.startHp ?? ''}:${eventSnapshotSignature(event)}`)
       .join(';');
 
     // the key must ALSO capture the calc-relevant identity of every mon the events resolve to: right
@@ -3039,7 +3512,7 @@ export const inferHackmonsSpread = (
     // each calc, so an old event's roll is reused as long as the participants (and thus their real
     // ability/item) haven't changed since it was cached; see RollCacheStore above
     const rollCacheKey = [state.battleId, calcdexId, participantSignature].join('|');
-    const rollCache = RollCacheStore.get(rollCacheKey) || new Map<string, number[]>();
+    const rollCache = RollCacheStore.get(rollCacheKey) || new Map<string, CachedDamageRolls>();
 
     RollCacheStore.set(rollCacheKey, rollCache);
 
@@ -3071,7 +3544,7 @@ export const inferHackmonsSpread = (
       ? collectJointConflictTriggers(candidateEvents, phaseOneMatches, damageContexts)
       : [];
     const parentalBondTriggers = phaseOneBest && candidateEvents.length
-      ? collectParentalBondTriggers(candidateEvents, damageContexts)
+      ? collectParentalBondTriggers(state, candidateEvents, damageContexts)
       : [];
     const typeChangeTrigger = phaseOneBest && candidateEvents.length
       ? collectTypeChangeTrigger(state, candidateEvents, damageContexts)
@@ -3193,7 +3666,10 @@ export const inferHackmonsSpread = (
     // otherwise-good fit
     const shouldPublishEstimate = best && Number.isFinite(best.score);
 
-    const publishedEvents = candidateEvents.filter((event) => event.eventType !== 'speed');
+    const publishedEventIds = new Set(matches.map((match) => match.eventId));
+    const publishedEvents = candidateEvents.filter((event) => (
+      event.eventType !== 'speed' && publishedEventIds.has(event.id)
+    ));
     const speedNotes = describeSpeedBound(
       state,
       candidateMatch,
@@ -3211,7 +3687,7 @@ export const inferHackmonsSpread = (
         notes: [
           `Unknown spreads start from ${DefaultIv} IV / ${DefaultEv} EV on every stat.`,
           'Preset-suggested item and ability overrides are ignored during spread inference.',
-          'Recent direct damage is scored against median rolls with bounded EV refinement.',
+          'Recent direct damage is fit with a roll likelihood and a heavy-tailed multiplier prior.',
           'Only direct move damage is modeled.',
           'Speed is inferred as a bound from turn order, not an exact value.',
           'Unknown volatile effects may lower confidence.',

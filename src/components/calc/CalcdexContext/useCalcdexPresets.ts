@@ -9,6 +9,7 @@ import {
   type CalcdexPokemonPreset,
   CalcdexPlayerKeys as AllPlayerKeys,
 } from '@showdex/interfaces/calc';
+import { isInferenceFormat } from '@showdex/features/hackmons-cup-inference';
 import { calcdexSlice, useDispatch } from '@showdex/redux/store';
 import { cloneAllPokemon, clonePreset } from '@showdex/utils/battle';
 import {
@@ -244,9 +245,16 @@ export const useCalcdexPresets = (
 
           // "old reliable"
           if (!preset?.calcdexId && !pokemon.transformedForme) {
+            // the unrestricted guesser ignores the standard EV allowance, which is only correct for
+            // the randomly-generated spreads in Hackmons formats -- everything else keeps upstream's
+            // legality-respecting guess
+            const guessSpread = isInferenceFormat(state.format)
+              ? guessUnrestrictedSpread
+              : guessServerSpread;
+
             const guessedSpread = state.legacy
               ? guessServerLegacySpread(state.format, pokemon)
-              : guessUnrestrictedSpread(state.format, pokemon);
+              : guessSpread(state.format, pokemon);
 
             if (nonEmptyObject(guessedSpread)) {
               preset = {

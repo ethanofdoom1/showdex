@@ -304,16 +304,18 @@ export const MixinCalcdexBootstrappable = <
         return void this.endTimer('(bad state nonce)', this.battleState?.battleNonce);
       }
 
+      const inferenceFormat = isInferenceFormat(this.battleState.format);
       const stepQueueLength = this.battle.stepQueue?.length || 0;
-      const shouldRebuildHackmonsInference = isInferenceFormat(this.battleState.format)
+      const shouldRebuildHackmonsInference = inferenceFormat
         && stepQueueLength > 0
         && !this.battleState.hackmonsInference;
 
-      // dispatch a battle sync if the nonces are different (i.e., something changed), the battle
-      // log grew, or derived Hackmons inference needs to be reconstructed after restored state.
+      // dispatch a battle sync if the nonces are different (i.e., something changed) or, in Hackmons
+      // formats only, the battle log grew or derived Hackmons inference needs to be reconstructed
+      // after restored state (every other format keeps the nonce-only trigger)
       if (
         this.battle.nonce === this.battleState.battleNonce
-        && this.battleState.battleStepQueueLength === stepQueueLength
+        && (!inferenceFormat || this.battleState.battleStepQueueLength === stepQueueLength)
         && !shouldRebuildHackmonsInference
       ) {
         /* l.debug(
@@ -336,11 +338,13 @@ export const MixinCalcdexBootstrappable = <
 
       // note: syncBattle() is no longer async, but since it's still wrapped in an async thunky,
       // we're keeping the `void` to keep TypeScript happy lol (`void` does nothing here btw)
-      traceHackmonsLatency('bootstrapScheduled', {
-        battleId: this.battle.id,
-        stepQueueLength,
-        directDamageCount: (this.battle.stepQueue || []).filter((step) => step.startsWith('|-damage|') && !step.includes('|[from]')).length,
-      });
+      if (inferenceFormat) {
+        traceHackmonsLatency('bootstrapScheduled', {
+          battleId: this.battle.id,
+          stepQueueLength,
+          directDamageCount: (this.battle.stepQueue || []).filter((step) => step.startsWith('|-damage|') && !step.includes('|[from]')).length,
+        });
+      }
       void (Adapter.store.dispatch as RootDispatch)(syncBattle({
         battle: this.battle,
         request: this.battleRequest,
