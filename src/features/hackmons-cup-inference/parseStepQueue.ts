@@ -25,6 +25,13 @@ interface PendingMove {
   boosts: Showdown.StatsTableNoHp;
   status: Showdown.PokemonStatus | '';
   crit?: boolean;
+
+  /**
+   * Targets whose NEXT hit of this move crit -- Showdown logs `-crit` immediately before that hit's
+   * own `-damage` line, so a multi-hit move that crits on only some of its hits is knowable here
+   * (and nowhere else).
+   */
+  pendingCritTargets?: Set<string>;
   multiHit?: boolean;
   hits?: number;
   effectiveness?: HackmonsDamageEffectiveness;
@@ -53,6 +60,7 @@ interface PendingDamageEvent {
   maxHp: number;
   totalDamage: number;
   hitDamages: number[];
+  critHits: boolean[];
   recoilObserved?: boolean;
   effectiveness?: HackmonsDamageEffectiveness;
   attackerBoosts: Showdown.StatsTableNoHp;
@@ -356,7 +364,8 @@ const processChunk = (
           startHp: pendingEvent.startHp,
           endHp: pendingEvent.endHp,
           maxHp: pendingEvent.maxHp,
-          crit: pendingMove?.crit,
+          crit: pendingEvent.critHits.some(Boolean) || pendingMove?.crit,
+          critHits: [...pendingEvent.critHits],
           multiHit: pendingMove?.multiHit,
           hits: pendingMove?.hits,
           effectiveness: pendingEvent.effectiveness || pendingMove?.effectiveness || 'neutral',
@@ -803,6 +812,12 @@ const processChunk = (
 
         if (target.id && lastMove) {
           lastMove.crit = true;
+
+          if (!lastMove.pendingCritTargets) {
+            lastMove.pendingCritTargets = new Set();
+          }
+
+          lastMove.pendingCritTargets.add(target.id);
         }
 
         return;
@@ -973,11 +988,16 @@ const processChunk = (
       ].join(':');
       const pendingDamage = pendingDamageEvents.get(damageKey);
 
+      // Set.delete() reports whether the `-crit` line that precedes this hit's `-damage` was for
+      // this defender, and consumes it so the NEXT hit starts uncrit again
+      const hitCrit = !!pendingMove.pendingCritTargets?.delete(defender.id);
+
       if (pendingDamage) {
         pendingDamage.endHp = hp.hp;
         pendingDamage.maxHp = maxHp;
         pendingDamage.totalDamage += damage;
         pendingDamage.hitDamages.push(damage);
+        pendingDamage.critHits.push(hitCrit);
       } else {
         pendingDamageEvents.set(damageKey, {
           turn: turnNumber,
@@ -989,6 +1009,7 @@ const processChunk = (
           defenderKey: defender.playerKey,
           attackerName: pendingMove.attackerName,
           hitDamages: [damage],
+          critHits: [hitCrit],
           defenderName: defender.name,
           moveName: pendingMove.moveName,
           attackerStartHp,

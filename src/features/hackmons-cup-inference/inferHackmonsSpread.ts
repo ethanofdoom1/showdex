@@ -52,7 +52,7 @@ const CoordinateCandidateEvs = [0, 32, 64, 96, DefaultEv, 160, 192, 224, 252];
 const MaxDamageContextGroups = 48;
 const MaxCandidateCount = 4000;
 const NeutralNature = 'Serious' as Showdown.PokemonNature;
-const CacheVersion = 'likelihood-fit-v24';
+const CacheVersion = 'likelihood-fit-v25';
 
 // keyed per defending Pokemon `calcdexId` + that mon's event signature, so a new battle log step
 // only re-searches the mon(s) whose events actually changed (see inferHackmonsSpread())
@@ -614,6 +614,22 @@ const combineDamageDistributions = (
   return combined;
 };
 
+// each hit's own roll distribution, which @smogon/calc only reports for a multi-hit move (a single
+// hit comes back as one flat array). Lets a partially-critting multi-hit move take each hit's rolls
+// from whichever of the crit/non-crit calcs actually applies to that hit.
+const extractHitDistributions = (result: unknown): number[][] => {
+  const damage = (result as { damage?: unknown; })?.damage;
+
+  if (!Array.isArray(damage) || typeof damage[0] === 'number') {
+    return [];
+  }
+
+  return damage
+    .filter((part): part is number[] => Array.isArray(part))
+    .map((part) => part.filter((value): value is number => typeof value === 'number' && Number.isFinite(value)))
+    .filter((part) => part.length);
+};
+
 const extractDamageRolls = (result: unknown): number[] => {
   const damage = (result as { damage?: unknown; })?.damage;
 
@@ -883,6 +899,25 @@ function resolveEventRelation(
 const resolveEventHitCount = (event: HackmonsInferenceEvent): number => (
   event.hits || event.hitDamages?.length || 1
 );
+
+// crits are per HIT, but `event.crit` is only "at least one hit crit" -- handing that straight to the
+// calc as `alwaysCriticalHits` models a single critting hit of Triple Axel as all three critting
+const resolveEventCritMask = (
+  event: HackmonsInferenceEvent,
+  hits: number,
+): boolean[] => {
+  if (!event.crit) {
+    return Array.from({ length: hits }, () => false);
+  }
+
+  // synthetic events (the offline fixture harnesses) carry only the aggregate flag, so the whole
+  // move stays crit for them, exactly as it did before per-hit crits were parsed
+  if (!event.critHits?.length) {
+    return Array.from({ length: hits }, () => true);
+  }
+
+  return Array.from({ length: hits }, (_, index) => !!event.critHits[index]);
+};
 
 const resolveEventMoveName = (
   state: CalcdexBattleState,
@@ -1206,52 +1241,82 @@ const evaluateCandidateEvent = (
       // and @smogon/calc's (patched) calculate() clones the move before the damage calc -- so a
       // post-construction `move.isCrit = ...` mutation is silently dropped by the clone (unlike `hits`,
       // which the custom clone explicitly carries over)
-      const moveResult = createSmogonMove(
-        state.format,
-        {
-          ...attackerWithEventHp,
-          moveOverrides: {
-            ...attackerWithEventHp.moveOverrides,
-            [context.moveName]: {
-              ...attackerWithEventHp.moveOverrides?.[context.moveName],
-              // Max moves can be selected as ordinary Hackmons Cup moves. Their dex BP is a display
-              // placeholder, while maxMove.basePower carries the actual raw-move value (1); only a
-              // logged Dynamax state upgrades an underlying move to its normal Max BP calculation.
-              basePower: !event.attackerDynamaxed
-                && dex.moves.get(formatId(context.moveName) as never)?.isMax
-                ? 1
-                : attackerWithEventHp.moveOverrides?.[context.moveName]?.basePower,
-              alwaysCriticalHits: !!event.crit,
+      const createEventMove = (isCrit: boolean) => {
+        const moveResult = createSmogonMove(
+          state.format,
+          {
+            ...attackerWithEventHp,
+            moveOverrides: {
+              ...attackerWithEventHp.moveOverrides,
+              [context.moveName]: {
+                ...attackerWithEventHp.moveOverrides?.[context.moveName],
+                // Max moves can be selected as ordinary Hackmons Cup moves. Their dex BP is a display
+                // placeholder, while maxMove.basePower carries the actual raw-move value (1); only a
+                // logged Dynamax state upgrades an underlying move to its normal Max BP calculation.
+                basePower: !event.attackerDynamaxed
+                  && dex.moves.get(formatId(context.moveName) as never)?.isMax
+                  ? 1
+                  : attackerWithEventHp.moveOverrides?.[context.moveName]?.basePower,
+                alwaysCriticalHits: isCrit,
+              },
             },
           },
-        },
-        context.moveName,
-        defenderWithEventHp,
-        eventField,
-      );
+          context.moveName,
+          defenderWithEventHp,
+          eventField,
+        );
 
-      if (!moveResult?.[0]) {
+        if (!moveResult?.[0]) {
+          return null;
+        }
+
+        // Parental Bond hypothesis: @smogon/calc's own Parental Bond mechanic (a real `move.hits === 1`
+        // check in its patched mechanics) computes the correct 100%+25% split distribution ONLY when
+        // `move.hits` is left at the move's natural (un-doubled) value -- forcing it to the REAL
+        // observed hit count (2, from the `-hitcount` line this ability itself causes) would disable
+        // that check and fall back to a naive "2 equal-power hits" calc instead
+        if (modifierOverride?.ability !== ('Parental Bond' as AbilityName)) {
+          moveResult[0].hits = resolveEventHitCount(event);
+        }
+
+        return moveResult;
+      };
+
+      const critMask = resolveEventCritMask(event, resolveEventHitCount(event));
+      const anyCrit = critMask.some(Boolean);
+      const partialCrit = anyCrit && !critMask.every(Boolean);
+      const moveResult = createEventMove(anyCrit);
+
+      if (!moveResult) {
         return emptyMatch(`invalid move ${event.moveName}`);
       }
 
-      const [move] = moveResult;
-
-      // Parental Bond hypothesis: @smogon/calc's own Parental Bond mechanic (a real `move.hits === 1`
-      // check in its patched mechanics) computes the correct 100%+25% split distribution ONLY when
-      // `move.hits` is left at the move's natural (un-doubled) value -- forcing it to the REAL
-      // observed hit count (2, from the `-hitcount` line this ability itself causes) would disable
-      // that check and fall back to a naive "2 equal-power hits" calc instead
-      if (modifierOverride?.ability !== ('Parental Bond' as AbilityName)) {
-        move.hits = resolveEventHitCount(event);
-      }
+      const [move, moveDefaults] = moveResult;
 
       const mods: ShowdexCalcMods = {
-        hitBasePowers: null,
+        // Triple Axel & Triple Kick's base power escalates per hit (20/40/60), which @smogon/calc
+        // models ONLY through this mod -- left out, all 3 hits calc at the dex BP of 20 for roughly
+        // half the real damage, and every landed Triple Axel reads as an unreachable "too-high" outlier
+        hitBasePowers: moveDefaults?.hitBasePowers?.length ? moveDefaults.hitBasePowers : null,
         excludeHazardsDamage: true,
         excludeEotDamage: true,
       };
 
-      const calculatedRolls = extractDamageRolls(calculate(dex, attacker, smogonDefender, move, field, mods));
+      const result = calculate(dex, attacker, smogonDefender, move, field, mods);
+      const plainMove = partialCrit ? createEventMove(false)?.[0] : null;
+      const critDistributions = plainMove ? extractHitDistributions(result) : [];
+      const plainDistributions = plainMove
+        ? extractHitDistributions(calculate(dex, attacker, smogonDefender, plainMove, field, mods))
+        : [];
+
+      // a multi-hit move that crit on only some of its hits: each hit's rolls come from the calc that
+      // matches that hit, then the per-hit distributions convolve into the move's total as usual
+      const calculatedRolls = critDistributions.length === critMask.length
+        && plainDistributions.length === critMask.length
+        ? combineDamageDistributions(critMask.map((crit, index) => (
+          crit ? critDistributions[index] : plainDistributions[index]
+        )))
+        : extractDamageRolls(result);
 
       if (event.maxHp === 100) {
         rolls = calculatedRolls;
@@ -1539,7 +1604,7 @@ const damageContextSignature = (
     event.defenderSide,
     event.attackerFaintCount,
     event.defenderFaintCount,
-    !!event.crit,
+    resolveEventCritMask(event, resolveEventHitCount(event)),
     resolveEventHitCount(event),
     !!event.attackerDynamaxed,
     event.attackerHitCounter || 0,
@@ -1792,6 +1857,11 @@ interface DamageEventGroup {
   count: number;
 }
 
+interface CandidateScore {
+  score: number;
+  infeasible: number;
+}
+
 const scoreCandidate = (
   state: CalcdexBattleState,
   damageGroups: DamageEventGroup[],
@@ -1803,7 +1873,7 @@ const scoreCandidate = (
   speedContexts: Map<string, SpeedEventContext>,
   rollCache?: RollCache,
   modifierOverride?: ModifierOverride,
-): number => {
+): CandidateScore => {
   const candidateSpreadStats = calcPokemonSpreadStats(state.format, {
     ...defender,
     nature,
@@ -1811,6 +1881,12 @@ const scoreCandidate = (
     evs,
   });
   let score = 0;
+  // how many observations this spread makes outright IMPOSSIBLE (not merely unlikely). The likelihood
+  // alone can't stand in for this: an in-range-but-unattainable observation -- one that sits between
+  // two adjacent damage rolls -- has the same ~0 model probability as a genuinely out-of-range one, so
+  // both collapse onto the contamination floor and become indistinguishable to `score`. Only the
+  // median-centering pass reads this, to keep itself from recentring an event out of range
+  let infeasible = 0;
 
   speedEvents.forEach((event) => {
     const context = speedContexts.get(event.id);
@@ -1835,6 +1911,10 @@ const scoreCandidate = (
       ? speedValues.otherSpeed - speedValues.candidateSpeed
       : speedValues.candidateSpeed - speedValues.otherSpeed;
 
+    if (margin > 0) {
+      infeasible += 1;
+    }
+
     score += speedEventLogLikelihood(margin, speedValues.candidateSpeed, speedValues.otherSpeed);
   });
 
@@ -1852,10 +1932,14 @@ const scoreCandidate = (
       modifierOverride,
     );
 
+    if (match.rangeDistance > 0) {
+      infeasible += count;
+    }
+
     score += match.logLikelihood * count;
   });
 
-  return score;
+  return { score, infeasible };
 };
 
 const isInRangeMatch = (
@@ -2992,6 +3076,7 @@ interface SpreadCandidate {
   ivs: Showdown.StatsTable;
   evs: Showdown.StatsTable;
   score: number;
+  infeasible: number;
 }
 
 type EventRelation = 'attacker' | 'defender' | null;
@@ -3000,7 +3085,7 @@ type SearchStat = Showdown.StatNameNoHp | 'hp';
 const cloneSpread = (spread: Showdown.StatsTable): Showdown.StatsTable => ({ ...spread });
 
 const candidateKey = (
-  candidate: SpreadCandidate,
+  candidate: Pick<SpreadCandidate, 'nature' | 'ivs' | 'evs'>,
 ): string => [
   candidate.nature,
   ...StatNames.map((stat) => candidate.ivs[stat]),
@@ -3022,8 +3107,39 @@ const scoreSpreadCandidate = (
   nature,
   ivs: cloneSpread(ivs),
   evs: cloneSpread(evs),
-  score: scoreCandidate(state, damageGroups, speedEvents, candidatePokemon, nature, ivs, evs, speedContexts, rollCache, modifierOverride),
+  ...scoreCandidate(state, damageGroups, speedEvents, candidatePokemon, nature, ivs, evs, speedContexts, rollCache, modifierOverride),
 });
+
+interface ProfileEntry {
+  value: number;
+  iv: number;
+  ev: number;
+  score: number;
+  infeasible: number;
+}
+
+// posterior median of a profile likelihood: `entries` must be sorted ascending by `value` and hold
+// one (best-scoring) entry per distinct reachable stat value, so the flat prior below is uniform over
+// *stat values* rather than over the IV/EV lattice points that happen to produce them
+const profileMedianValue = (
+  entries: ProfileEntry[],
+): number => {
+  const maxScore = Math.max(...entries.map((entry) => entry.score));
+  const weights = entries.map((entry) => Math.exp(entry.score - maxScore));
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+
+  let cumulative = 0;
+
+  for (let i = 0; i < entries.length; i++) {
+    cumulative += weights[i];
+
+    if (cumulative >= total / 2) {
+      return entries[i].value;
+    }
+  }
+
+  return entries[entries.length - 1].value;
+};
 
 const determineSearchStats = (
   state: CalcdexBattleState,
@@ -3214,12 +3330,7 @@ function searchBestCandidates(
       return;
     }
 
-    const key = candidateKey({
-      nature,
-      ivs,
-      evs,
-      score: 0,
-    });
+    const key = candidateKey({ nature, ivs, evs });
 
     if (seen.has(key)) {
       return;
@@ -3285,12 +3396,96 @@ function searchBestCandidates(
     }
   }
 
+  // the argmax above is the right FIT but the wrong thing to REPORT wherever the likelihood is
+  // one-sided or flat across a band of spreads: a censored KO ("did at least this much") keeps gaining
+  // likelihood as the stat climbs and a speed bound ("was at least this fast") stops losing any, so
+  // the descent parks on the top end of the feasible band -- e.g. the `ko-censored` fixture's band is
+  // Atk 266..275 and the argmax reports 275. This pass reports the band's middle instead, without
+  // touching the likelihood itself: per searched stat, the profile likelihood over every distinct
+  // reachable stat value is turned into a posterior under a flat prior and its median value is taken.
+  // A well-constrained stat has a peaked profile, so its median IS its argmax and nothing moves; only
+  // genuinely one-sided or flat evidence recentres. Nature stays the argmax's -- a "median nature"
+  // isn't meaningful -- and stats with no evidence at all never enter `searchStats`, so they keep the
+  // neutral-prior default rather than being recentred onto anything
+  let centered = best;
+
+  for (const stat of searchStats) {
+    if (exhausted) {
+      break;
+    }
+
+    const byValue = new Map<number, ProfileEntry>();
+
+    for (const iv of CandidateIvs) {
+      for (const ev of CoordinateCandidateEvs) {
+        const ivs = { ...centered.ivs, [stat]: iv };
+        const evs = { ...centered.evs, [stat]: ev };
+        const key = candidateKey({ nature: centered.nature, ivs, evs });
+        let candidate = seen.get(key);
+
+        if (!candidate) {
+          candidate = score(centered.nature, ivs, evs);
+          seen.set(key, candidate);
+        }
+
+        const value = calcPokemonSpreadStats(state.format, {
+          ...candidatePokemon,
+          nature: centered.nature,
+          ivs,
+          evs,
+        })[stat];
+        const existing = byValue.get(value);
+
+        // fewest impossible observations first, then likelihood -- the same order the filter below
+        // applies, so a value's representative is never a needlessly infeasible spelling of it
+        if (!existing
+          || candidate.infeasible < existing.infeasible
+          || (candidate.infeasible === existing.infeasible && candidate.score > existing.score)
+        ) {
+          byValue.set(value, {
+            value,
+            iv,
+            ev,
+            score: candidate.score,
+            infeasible: candidate.infeasible,
+          });
+        }
+      }
+    }
+
+    const entries = [...byValue.values()].sort((left, right) => left.value - right.value);
+    // the search already prefers a spread that keeps every past observation POSSIBLE over one that's
+    // merely closest-to-median but infeasible somewhere; centring inherits that, or it would happily
+    // recentre onto a value that strands an event outside its own roll range (measured on the L2
+    // `mixed-order` case, whose Waterfall observation falls BETWEEN two adjacent rolls -- so the
+    // likelihood scores it identically to out-of-range and can't hold the median in on its own)
+    const ceiling = entries.reduce((left, right) => (right.score > left.score ? right : left)).infeasible;
+    const feasible = entries.filter((entry) => entry.infeasible <= ceiling);
+    const median = profileMedianValue(feasible);
+    const picked = feasible.find((entry) => entry.value === median);
+
+    centered = seen.get(candidateKey({
+      nature: centered.nature,
+      ivs: { ...centered.ivs, [stat]: picked.iv },
+      evs: { ...centered.evs, [stat]: picked.ev },
+    }));
+  }
+
   endTimer(
     'searchBestCandidates() ->', seen.size, 'candidates,', scoringEvents.length, 'scoring events,',
     modifierOverride?.id || '(no modifier)',
   );
 
-  return [...seen.values()].sort((a, b) => b.score - a.score);
+  const centeredKey = candidateKey(centered);
+
+  // every caller reads [0] as "the estimate", so the centred candidate leads even though it scores at
+  // or below the argmax; the rest stay score-ordered for anything that walks the tail
+  return [
+    centered,
+    ...[...seen.values()]
+      .filter((candidate) => candidateKey(candidate) !== centeredKey)
+      .sort((a, b) => b.score - a.score),
+  ];
 }
 
 interface SpeedObservation {
