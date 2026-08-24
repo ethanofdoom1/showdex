@@ -202,6 +202,15 @@ export interface HackmonsInferenceEvent {
   hitDamages?: number[];
 
   /**
+   * Which of this move use's hits crit, in landing order (parallel to `hitDamages`). A multi-hit
+   * move crits per hit, so `crit` alone (true when ANY hit crit) would model a single critting hit
+   * of Triple Axel as all three critting.
+   *
+   * @since 1.3.0
+   */
+  critHits?: boolean[];
+
+  /**
    * Whether a `[from] item: X` recoil line was observed on the ATTACKER immediately after this hit
    * (e.g. Life Orb's unconditional 10% recoil). Absence across every supporting event is
    * disqualifying evidence against a Life-Orb-shaped hypothesis (see the recoil-absence exclusion
