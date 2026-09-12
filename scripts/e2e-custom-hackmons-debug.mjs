@@ -28,6 +28,10 @@ const profileDirs = {
 const speciesBaseStats = {
   Mew: { hp: 100, atk: 100, def: 100, spa: 100, spd: 100, spe: 100 },
   Vaporeon: { hp: 130, atk: 65, def: 60, spa: 110, spd: 95, spe: 65 },
+  // slice 8 (`hackmonsdefaults`): species picked for their FIRST dex ability, not their stats --
+  // Tyranitar's is Sand Stream and Tapu Koko's is Electric Surge, the two field-setter shapes
+  Tyranitar: { hp: 100, atk: 134, def: 110, spa: 95, spd: 100, spe: 61 },
+  'Tapu Koko': { hp: 70, atk: 115, def: 85, spa: 95, spd: 75, spe: 130 },
   Zoroark: { hp: 60, atk: 105, def: 60, spa: 120, spd: 60, spe: 105 },
 };
 
@@ -127,6 +131,24 @@ EVs: 252 HP / 252 Def / 4 SpD
 Bold Nature
 - Recover
 `;
+
+// two-mon team with a fully custom species/ability/item/spread per slot. `item: null` omits the
+// item line entirely -- a mon holding nothing can never reveal an item, which is what the
+// `hackmonsdefaults` scenario needs to keep the item slot genuinely unknown for the whole battle.
+const customPairTeam = (label, mons) => [
+  `=== [${formatId}] Showdex Custom ${label} ===`,
+  '',
+  ...mons.map((mon) => [
+    `${mon.species}${mon.item ? ` @ ${mon.item}` : ''}`,
+    `Ability: ${mon.ability}`,
+    'Level: 100',
+    `EVs: ${mon.evs}`,
+    `${mon.nature} Nature`,
+    ...(mon.ivs ? [`IVs: ${mon.ivs}`] : []),
+    ...mon.moves.map((move) => `- ${move}`),
+    '',
+  ].join('\n')),
+].join('\n');
 
 // each scenario exercises a different inference path; pick one with SCENARIO=<name> (default: mixed)
 const scenarios = {
@@ -420,6 +442,7 @@ const scenarios = {
   // could tie or win; with it, Life Orb is rejected outright since no `[from] item: Life Orb` line
   // ever appears, leaving Choice Band as the sole/correct adopted class.
   lifeorbexcluded: {
+    probeModifierChips: true,
     teams: {
       a: teamA('252 HP / 252 Def', 'Bold', ['Recover']),
       b: teamB('252 HP / 252 Atk / 4 Def', 'Adamant', ['Body Slam', 'Recover'], { item: 'Choice Band' }),
@@ -507,7 +530,67 @@ const scenarios = {
     ],
   },
 
+  // Slice 8 -- Hackmons item/ability defaults + weather/terrain leakage. Team B's two mons are
+  // chosen for their FIRST dex ability, which is what sanitizePokemon() currently writes into
+  // `dirtyAbility` when nothing has been revealed: Tyranitar -> Sand Stream (weather) and Tapu Koko
+  // -> Electric Surge (terrain). Their REAL ability is Illuminate, which the simulator never
+  // announces (unlike the Pressure every other scenario uses, whose onStart emits `|-ability|` and
+  // reveals itself on switch-in), and neither holds an item, so both stay ability-unknown AND
+  // item-unknown for the whole battle. Body Slam (A) vs. Crunch (B) keeps the damaging move names
+  // disjoint for the harness's (turn, moveName) pairing, and Normal-vs-Rock is resisted, so nothing
+  // KOs before the scripted switch on turn 3 puts Tapu Koko in.
+  hackmonsdefaults: {
+    suppressEstimateAutoApply: true,
+    teams: {
+      a: teamA('252 HP / 252 Atk', 'Adamant', ['Body Slam', 'Recover']),
+      b: customPairTeam('B', [
+        { species: 'Tyranitar', ability: 'Illuminate', item: null, evs: '252 HP / 252 Atk / 4 Def', nature: 'Adamant', moves: ['Crunch', 'Recover'] },
+        { species: 'Tapu Koko', ability: 'Illuminate', item: null, evs: '252 HP / 252 Atk / 4 Def', nature: 'Adamant', moves: ['Crunch', 'Recover'] },
+      ]),
+    },
+    plannedTurns: [
+      { a: 'Body Slam', b: 'Crunch' },
+      { a: 'Body Slam', b: 'Crunch' },
+      { a: 'Recover', b: 'Switch' },
+      { a: 'Body Slam', b: 'Crunch' },
+      { a: 'Body Slam', b: 'Crunch' },
+    ],
+  },
+
+  // Slice 8 -- the multi-chip case. Hidden Huge Power (Atk x2, never announced) and exactly ONE
+  // damaging turn: adoption needs >= 2 supporting events, so every class that can explain the single
+  // x2-shaped outlier lands in the "Possible" list instead. Mew holds NO item, because a known item
+  // pins the item slot (candidateItemPinned()) and would leave only ability-slot chips. This is the
+  // Ice-Scales-vs-Assault-Vest situation from the request: several chips, different multipliers,
+  // therefore different fitted spreads and different modelled ranges.
+  possiblechips: {
+    probeModifierChips: true,
+    suppressEstimateAutoApply: true,
+    teams: {
+      a: teamA('252 HP / 252 Def', 'Bold', ['Recover']),
+      b: customPairTeam('B', [
+        // Atk investment tuned the way `hustle` tunes its own: 0 EV / 0 IV / neutral gives a raw Atk
+        // of 205, which Huge Power doubles to 410 -- above the 328 ceiling of ANY spread at x1 (so
+        // the hit is a genuine too-high outlier) but comfortably inside what x1.5 (raw 254-300) and
+        // x2 (raw 190-225) can BOTH reach, which is what makes several classes survive at once.
+        // Derived from this repo's MODE=forward oracle: Body Slam into a 252/252+ Bold Vaporeon
+        // scales at roughly 0.26-0.30 damage per point of Atk.
+        { species: 'Mew', ability: 'Huge Power', item: null, evs: '252 HP / 4 Def', nature: 'Serious', ivs: '0 Atk', moves: ['Body Slam', 'Recover'] },
+      ]),
+    },
+    // ONE damaging turn, then quiet turns: the inference lags a turn behind the log (measured --
+    // `hugepower` still reports 0 modeled events through its first three snapshots), so a
+    // single-turn battle ends before the estimate ever sees the hit.
+    plannedTurns: [
+      { a: 'Recover', b: 'Body Slam' },
+      { a: 'Recover', b: 'Recover' },
+      { a: 'Recover', b: 'Recover' },
+      { a: 'Recover', b: 'Recover' },
+    ],
+  },
+
   hugepower: {
+    probeModifierChips: true,
     teams: {
       a: teamA('252 HP / 252 Def', 'Bold', ['Recover']),
       b: teamB('252 HP / 252 Atk / 4 Def', 'Adamant', ['Body Slam', 'Recover'], { ability: 'Huge Power' }),
@@ -1777,6 +1860,7 @@ const snapshotBattle = async (page, battleId) => page.evaluate(({ roomId, realSp
   // inferred/opponent side, state[opponentKey].pokemon[] carries speciesForme + calcdexId per mon).
   let opponentRoster = null;
   let opponentRosterError = null;
+  let calcdexField = null;
   try {
     const anchor = document.querySelector('[data-hackmons-estimate-events]')
       || document.querySelector('[class*="Calcdex"]');
@@ -1805,7 +1889,34 @@ const snapshotBattle = async (page, battleId) => page.evaluate(({ roomId, realSp
           opponentRoster = (opponentPlayer?.pokemon || []).map((mon) => ({
             speciesForme: mon?.speciesForme ?? null,
             calcdexId: mon?.calcdexId ?? null,
+            // slice 8 probe: what the panel ASSERTS about a Hackmons mon whose ability/item nothing
+            // has revealed. `ability`/`item` are the game-revealed values; `dirtyAbility`/`dirtyItem`
+            // are the guesses (sanitizePokemon()'s first-dex-ability default, or a preset's).
+            ability: mon?.ability ?? null,
+            dirtyAbility: mon?.dirtyAbility ?? null,
+            abilities: mon?.abilities ?? [],
+            item: mon?.item ?? null,
+            dirtyItem: mon?.dirtyItem ?? null,
+            prevItem: mon?.prevItem ?? null,
+            nature: mon?.nature ?? null,
+            ivs: mon?.ivs ?? null,
+            evs: mon?.evs ?? null,
+            // positive evidence that the PRESET path actually ran on this mon this run -- without it
+            // a clean roster proves only that presets never loaded, not that they were suppressed
+            presetId: mon?.presetId ?? null,
+            altAbilityCount: (mon?.altAbilities || []).length,
+            altItemCount: (mon?.altItems || []).length,
+            presetCount: (mon?.presets || []).length,
           }));
+
+          calcdexField = {
+            weather: calcdexState.field?.weather ?? null,
+            autoWeather: calcdexState.field?.autoWeather ?? null,
+            dirtyWeather: calcdexState.field?.dirtyWeather ?? null,
+            terrain: calcdexState.field?.terrain ?? null,
+            autoTerrain: calcdexState.field?.autoTerrain ?? null,
+            dirtyTerrain: calcdexState.field?.dirtyTerrain ?? null,
+          };
         }
       }
     }
@@ -1820,6 +1931,7 @@ const snapshotBattle = async (page, battleId) => page.evaluate(({ roomId, realSp
     allPanels,
     opponentRoster,
     opponentRosterError,
+    calcdexField,
     requestType: room?.request?.requestType || null,
     stepQueueTail: stepQueue.slice(-40),
     stepQueueLength: stepQueue.length,
@@ -1845,6 +1957,105 @@ const snapshotBattle = async (page, battleId) => page.evaluate(({ roomId, realSp
   natureMods: natureModifiers,
   scenarioName,
 });
+
+// slice 8: read the OPPONENT's currently-selected Calcdex mon straight out of the CalcdexContext
+// state (same react-fiber route the roster probe uses), plus the estimate section's selection
+// attributes. Used to prove what a suggestion chip click actually wrote into redux.
+const readSelectedOpponentState = async (page) => page.evaluate(() => {
+  const anchorNode = document.querySelector('[data-hackmons-estimate-events]')
+    || document.querySelector('[class*="Calcdex"]');
+
+  if (!anchorNode) {
+    return { error: 'no Calcdex anchor node found' };
+  }
+
+  const fiberKey = Object.keys(anchorNode).find((k) => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+
+  if (!fiberKey) {
+    return { error: 'no react fiber key on anchor node' };
+  }
+
+  let fiber = anchorNode[fiberKey];
+  let calcdexState = null;
+
+  for (let i = 0; i < 200 && fiber; i++) {
+    const value = fiber.memoizedProps?.value;
+
+    if (value?.state && value.state.opponentKey && value.state[value.state.opponentKey]?.pokemon) {
+      calcdexState = value.state;
+      break;
+    }
+
+    fiber = fiber.return;
+  }
+
+  if (!calcdexState) {
+    return { error: 'walked fiber chain without finding CalcdexContext state' };
+  }
+
+  const player = calcdexState[calcdexState.opponentKey];
+  const mon = (player?.pokemon || [])[player?.selectionIndex] || null;
+  const section = document.querySelector('[data-hackmons-estimate-events]');
+  const parseAttr = (name) => {
+    try {
+      return JSON.parse(section?.getAttribute(name) || 'null');
+    } catch {
+      return null;
+    }
+  };
+
+  return {
+    speciesForme: mon?.speciesForme ?? null,
+    ability: mon?.ability ?? null,
+    dirtyAbility: mon?.dirtyAbility ?? null,
+    item: mon?.item ?? null,
+    dirtyItem: mon?.dirtyItem ?? null,
+    nature: mon?.nature ?? null,
+    ivs: mon?.ivs ?? null,
+    evs: mon?.evs ?? null,
+    selectedModifier: section?.getAttribute('data-hackmons-selected-modifier') ?? null,
+    selectedEvents: parseAttr('data-hackmons-selected-events'),
+    estimateSelection: parseAttr('data-hackmons-estimate-selection'),
+    estimateEvents: parseAttr('data-hackmons-estimate-events'),
+    modifiers: parseAttr('data-hackmons-modifiers') || [],
+    field: {
+      autoWeather: calcdexState.field?.autoWeather ?? null,
+      dirtyWeather: calcdexState.field?.dirtyWeather ?? null,
+      autoTerrain: calcdexState.field?.autoTerrain ?? null,
+      dirtyTerrain: calcdexState.field?.dirtyTerrain ?? null,
+    },
+  };
+});
+
+// slice 8: click every suggestion chip in turn (and then the FIRST one again, when there is more
+// than one) and record the resulting Calcdex state after each click. The re-click is what proves a
+// selection OVERRIDES the previous one rather than accumulating with it: state after the third
+// click must be identical to state after the first.
+const probeModifierChipSelections = async (page) => {
+  const chipIds = await page.evaluate(() => [...document.querySelectorAll('[data-hackmons-modifier-id]')]
+    .map((node) => node.getAttribute('data-hackmons-modifier-id'))
+    .filter(Boolean));
+
+  const clickOrder = chipIds.length > 1 ? [...chipIds, chipIds[0]] : [...chipIds];
+  const selections = [];
+
+  for (const chipId of clickOrder) {
+    const selector = `[data-hackmons-modifier-id="${chipId}"]`;
+
+    await page.click(selector, { force: true }).catch(() => null);
+
+    // wait on the VALUE we are about to read, not on the node existing
+    const settled = await page.waitForFunction(
+      (id) => document.querySelector('[data-hackmons-estimate-events]')?.getAttribute('data-hackmons-selected-modifier') === id,
+      chipId,
+      { timeout: 5000 },
+    ).then(() => true).catch(() => false);
+
+    selections.push({ chipId, settled, state: await readSelectedOpponentState(page) });
+  }
+
+  return { chipIds, selections };
+};
 
 const applyVisibleEstimate = async (page) => {
   const applyButton = page.getByRole('button', { name: 'Apply' }).first();
@@ -2025,6 +2236,17 @@ try {
     await pages[1].evaluate(() => document.documentElement.setAttribute('data-showdex-hackmons-suppress-estimate-apply', ''));
   }
 
+  // slice 8: suppress ONLY the first-load auto-apply (no latency trace), so the probe measures the
+  // panel's DEFAULT state rather than the post-apply one. applyEstimate() already nulls
+  // dirtyAbility/dirtyItem, which masks the defaults defect on whichever mon happens to have been
+  // auto-applied -- measured 2026-08-23: Tyranitar (auto-applied) read clean while Tapu Koko (not)
+  // carried a fabricated Electric Surge + Choice Specs in the same run.
+  if (scenario.suppressEstimateAutoApply) {
+    await Promise.all(pages.map((page) => page.evaluate(() => (
+      document.documentElement.setAttribute('data-showdex-hackmons-suppress-estimate-apply', '')
+    ))));
+  }
+
   console.log('Battle rooms:', battleIds);
 
   // resolve team preview for both sides directly -- the planned-turn loop below (which normally sends
@@ -2183,6 +2405,281 @@ try {
         damageMismatches: finalSnapshot.damageMismatches,
       },
     })}`);
+  }
+
+  if (scenarioName === 'hackmonsdefaults') {
+    // Slice 8 D-clauses. Neither opponent mon ever reveals an ability (Illuminate has no onStart
+    // message) or an item (they hold none), so every value below must stay empty -- while their
+    // first dex ability is a field setter, which is exactly what the old first-dex-ability default
+    // would have written in.
+    // D5 needs POSITIVE evidence that the preset path -- the second source of a fabricated
+    // ability/item -- actually executed this run. Preset application is async (it waits on the
+    // preset API + a usage nonce), so a roster that reads clean immediately after the last turn may
+    // simply mean presets never arrived. Poll until at least one opponent mon carries a presetId.
+    let defaultsSnapshot = finalSnapshot;
+
+    for (let attempt = 0; attempt < 15; attempt++) {
+      if ((defaultsSnapshot.opponentRoster || []).some((mon) => !!mon.presetId)) {
+        break;
+      }
+
+      await pages[0].waitForTimeout(1000);
+      defaultsSnapshot = await snapshotBattle(pages[0], battleIds[0]);
+    }
+
+    const roster = defaultsSnapshot.opponentRoster || [];
+    const field = defaultsSnapshot.calcdexField || {};
+    const failures = [];
+
+    if (defaultsSnapshot.opponentRosterError) {
+      failures.push(`opponentRoster probe failed: ${defaultsSnapshot.opponentRosterError}`);
+    }
+
+    // D5 -- the preset path ran. Without this the whole gate can pass because presets never loaded,
+    // which would leave applyPreset()'s ability/item guess completely unexercised.
+    if (!roster.some((mon) => !!mon.presetId)) {
+      failures.push(`D5 no opponent mon carries a presetId after 15s -- preset application never ran, so this run cannot certify it was suppressed (roster: ${JSON.stringify(roster.map((mon) => ({ forme: mon.speciesForme, presetId: mon.presetId, presetCount: mon.presetCount })))})`);
+    }
+
+    // D6 -- the option lists the dropdowns render are NOT how D1 was made to pass: a mon that had a
+    // preset applied must still carry that preset's ability/item alternatives.
+    roster.filter((mon) => !!mon.presetId).forEach((mon) => {
+      if (!mon.altAbilityCount) {
+        failures.push(`D6 ${mon.speciesForme}: presetId set but altAbilities is empty (option list was cleared instead of the guess suppressed)`);
+      }
+    });
+
+    if (roster.length !== 2) {
+      failures.push(`expected 2 opponent mons in the Calcdex roster, got ${roster.length}`);
+    }
+
+    roster.forEach((mon) => {
+      const label = mon.speciesForme || '(unknown)';
+
+      if (mon.ability) {
+        failures.push(`D1 ${label}: ability = ${mon.ability} (nothing revealed one; expected empty)`);
+      }
+
+      if (mon.dirtyAbility) {
+        failures.push(`D1 ${label}: dirtyAbility = ${mon.dirtyAbility} (expected empty in a Hackmons format)`);
+      }
+
+      if (mon.item) {
+        failures.push(`D1 ${label}: item = ${mon.item} (holds none; expected empty)`);
+      }
+
+      if (mon.dirtyItem) {
+        failures.push(`D1 ${label}: dirtyItem = ${mon.dirtyItem} (expected empty in a Hackmons format)`);
+      }
+    });
+
+    // D2 -- the probe is capable of catching the defect: both species must still publish their real
+    // dex ability list (first entry = the field setter), so a blanked-out `abilities` can't pass D1
+    const firstAbilities = roster.map((mon) => (mon.abilities || [])[0] || null);
+
+    if (!firstAbilities.includes('Sand Stream') || !firstAbilities.includes('Electric Surge')) {
+      failures.push(`D2 first dex abilities = ${JSON.stringify(firstAbilities)} (expected Sand Stream + Electric Surge)`);
+    }
+
+    // D3 -- no field effect may be derived from an ability nothing revealed
+    ['weather', 'autoWeather', 'dirtyWeather', 'terrain', 'autoTerrain', 'dirtyTerrain'].forEach((key) => {
+      if (field[key]) {
+        failures.push(`D3 field.${key} = ${field[key]} (expected empty; no weather/terrain was ever set in-battle)`);
+      }
+    });
+
+    // D4 -- the damage model itself is unaffected
+    if ((defaultsSnapshot.damageMismatches || []).length) {
+      failures.push(`D4 damageMismatches = ${JSON.stringify(defaultsSnapshot.damageMismatches)}`);
+    }
+
+    console.log(`hackmonsDefaultsCheck ${JSON.stringify({ ok: !failures.length, failures, roster, field }, null, 2)}`);
+
+    if (failures.length) {
+      throw new Error(`Hackmons defaults checks failed:\n${failures.join('\n')}`);
+    }
+  }
+
+  if (scenario.probeModifierChips) {
+    // Slice 8 S-clauses. Click every suggestion chip and prove the Calcdex state it writes is
+    // WHOLLY that chip's hypothesis: its own slot set to the class representative, the other slot
+    // cleared, the spread exactly the chip's own candidateSpread, and the debug rows switched to
+    // that hypothesis's own per-event matches.
+    const chipProbe = await probeModifierChipSelections(pages[0]);
+    const failures = [];
+    const statKeys = ['hp', 'atk', 'def', 'spa', 'spd', 'spe'];
+
+    console.log(`modifierChipProbe ${JSON.stringify(chipProbe, null, 2)}`);
+
+    if (!chipProbe.chipIds.length) {
+      failures.push('S1 no [data-hackmons-modifier-id] suggestion chips rendered');
+    }
+
+    chipProbe.selections.forEach(({ chipId, settled, state }, index) => {
+      const at = `S2 click ${index + 1} (${chipId})`;
+
+      if (!settled) {
+        failures.push(`${at}: data-hackmons-selected-modifier never became "${chipId}"`);
+      }
+
+      const chip = (state.modifiers || []).find((entry) => entry?.modifier?.id === chipId);
+
+      if (!chip) {
+        failures.push(`${at}: chip id absent from data-hackmons-modifiers`);
+        return;
+      }
+
+      // the chip publishes the COMPLETE slot state its spread was fitted under; the panel must end
+      // up in exactly that state -- both slots, not just the chip's own one
+      const selection = chip.selection;
+
+      if (!selection || typeof selection !== 'object') {
+        failures.push(`${at}: chip published no selection {dirtyAbility, dirtyItem}`);
+      } else {
+        const ownSlot = chip.modifier.slot === 'ability' ? 'dirtyAbility' : 'dirtyItem';
+
+        if (selection[ownSlot] !== chip.modifier.representative) {
+          failures.push(`${at}: selection.${ownSlot} = ${selection[ownSlot]} (expected the class representative ${chip.modifier.representative})`);
+        }
+
+        if ((state.dirtyAbility ?? null) !== (selection.dirtyAbility ?? null)) {
+          failures.push(`${at}: dirtyAbility = ${state.dirtyAbility} (expected ${selection.dirtyAbility})`);
+        }
+
+        if ((state.dirtyItem ?? null) !== (selection.dirtyItem ?? null)) {
+          failures.push(`${at}: dirtyItem = ${state.dirtyItem} (expected ${selection.dirtyItem})`);
+        }
+      }
+
+      // R5 payload guard: the DOM attribute (and the latency trace built from the same array) must
+      // NOT carry per-hypothesis matches -- that grows O(hypotheses x events) on every render
+      if ('candidateMatches' in chip) {
+        failures.push(`${at}: data-hackmons-modifiers carries candidateMatches (expected it stripped from the DOM projection)`);
+      }
+
+      if (!chip.candidateSpread) {
+        failures.push(`${at}: chip published no candidateSpread`);
+      } else {
+        if (state.nature !== chip.candidateSpread.nature) {
+          failures.push(`${at}: nature = ${state.nature} (expected ${chip.candidateSpread.nature})`);
+        }
+
+        statKeys.forEach((stat) => {
+          if (state.ivs?.[stat] !== chip.candidateSpread.ivs?.[stat]) {
+            failures.push(`${at}: ivs.${stat} = ${state.ivs?.[stat]} (expected ${chip.candidateSpread.ivs?.[stat]})`);
+          }
+
+          if (state.evs?.[stat] !== chip.candidateSpread.evs?.[stat]) {
+            failures.push(`${at}: evs.${stat} = ${state.evs?.[stat]} (expected ${chip.candidateSpread.evs?.[stat]})`);
+          }
+        });
+      }
+
+      if (!Array.isArray(state.selectedEvents) || !state.selectedEvents.length) {
+        failures.push(`${at}: data-hackmons-selected-events = ${JSON.stringify(state.selectedEvents)} (expected this hypothesis's own per-event matches)`);
+      }
+    });
+
+    // S3 -- reported when a run happens to render more than one chip (an adopted modifier renders
+    // exactly one, so this is not a standing clause): re-clicking the first chip must restore its
+    // own state byte-for-byte, i.e. selecting is an override, not an accumulation.
+    const selectionKey = (state) => JSON.stringify({
+      dirtyAbility: state.dirtyAbility ?? null,
+      dirtyItem: state.dirtyItem ?? null,
+      nature: state.nature ?? null,
+      ivs: state.ivs ?? null,
+      evs: state.evs ?? null,
+      selectedEvents: state.selectedEvents ?? null,
+    });
+
+    if (chipProbe.chipIds.length > 1) {
+      const first = selectionKey(chipProbe.selections[0].state);
+      const last = selectionKey(chipProbe.selections[chipProbe.selections.length - 1].state);
+
+      if (first !== last) {
+        failures.push(`S3 re-clicking the first chip did not restore its own state\nfirst: ${first}\nlast:  ${last}`);
+      }
+    }
+
+    // S5 -- DECISIVE for "the debug lines show THIS hypothesis's damage consistency" (clause
+    // CORRECTED 2026-08-24). Every UNADOPTED chip must render rows that differ from the published
+    // estimate's rows: an unadopted hypothesis exists precisely because the published neutral fit
+    // could NOT explain the observation, so a panel that keeps rendering `estimate.matches` is
+    // caught with certainty. (The clause first frozen here compared two chips against EACH OTHER on
+    // the grounds that different multipliers imply different modelled ranges -- arithmetically
+    // false: modelled damage depends on the effective attack stat, so two hypotheses explaining one
+    // observation converge on the same effective value from different raw spreads. Measured
+    // offline: Huge Power fits raw Atk 207 x2 = 414 and Choice Band fits raw 276 x1.5 = 414, giving
+    // both the identical range [106,125]. An ADOPTED chip's rows legitimately DO equal the
+    // published ones, because the published spread IS that modifier's own fit.)
+    chipProbe.selections.forEach(({ chipId, state }, index) => {
+      const chip = (state.modifiers || []).find((entry) => entry?.modifier?.id === chipId);
+
+      if (!chip || chip.adopted) {
+        return;
+      }
+
+      if (JSON.stringify(state.selectedEvents) === JSON.stringify(state.estimateEvents)) {
+        failures.push(`S5 click ${index + 1} (${chipId}, unadopted): debug rows are byte-identical to the published estimate's rows (expected this hypothesis's own matches)`);
+      }
+    });
+
+    console.log(`modifierChipDiscrimination ${JSON.stringify({
+      chipIds: chipProbe.chipIds,
+      unadoptedChips: chipProbe.selections
+        .map(({ chipId, state }) => ((state.modifiers || []).find((entry) => entry?.modifier?.id === chipId)?.adopted === false ? chipId : null))
+        .filter(Boolean),
+    })}`);
+
+    // S4 -- pressing Apply returns the panel to the neutral published estimate: the selection is
+    // cleared and both hypothesis slots are blank again. Discriminating because the chip clicks
+    // above have just set one of them.
+    if (chipProbe.chipIds.length) {
+      const applied = await applyVisibleEstimate(pages[0]);
+
+      if (!applied) {
+        failures.push('S4 Apply button was not visible after selecting a suggestion');
+      } else {
+        await pages[0].waitForTimeout(500);
+
+        const afterApply = await readSelectedOpponentState(pages[0]);
+
+        console.log(`modifierChipAfterApply ${JSON.stringify(afterApply, null, 2)}`);
+
+        if (afterApply.selectedModifier) {
+          failures.push(`S4 data-hackmons-selected-modifier = ${afterApply.selectedModifier} after Apply (expected cleared)`);
+        }
+
+        // Apply must leave the panel in the slot state the PUBLISHED spread was fitted under -- which
+        // is both slots empty when nothing was adopted, but the adopted modifier's own slot when one
+        // WAS adopted (the published `best` is that modifier's candidate). Blanking both slots there
+        // would apply a Huge-Power-fitted spread with no Huge Power.
+        const published = afterApply.estimateSelection;
+
+        if (!published || typeof published !== 'object') {
+          failures.push(`S4 data-hackmons-estimate-selection = ${JSON.stringify(published)} (expected {dirtyAbility, dirtyItem})`);
+        } else {
+          if ((afterApply.dirtyAbility ?? null) !== (published.dirtyAbility ?? null)) {
+            failures.push(`S4 dirtyAbility = ${afterApply.dirtyAbility} after Apply (expected ${published.dirtyAbility})`);
+          }
+
+          if ((afterApply.dirtyItem ?? null) !== (published.dirtyItem ?? null)) {
+            failures.push(`S4 dirtyItem = ${afterApply.dirtyItem} after Apply (expected ${published.dirtyItem})`);
+          }
+        }
+
+        // with no chip selected the debug rows are the published estimate's again
+        if (JSON.stringify(afterApply.selectedEvents) !== JSON.stringify(afterApply.estimateEvents)) {
+          failures.push('S4 data-hackmons-selected-events != data-hackmons-estimate-events after Apply (expected the debug rows back on the published estimate)');
+        }
+      }
+    }
+
+    console.log(`modifierChipCheck ${JSON.stringify({ ok: !failures.length, chipCount: chipProbe.chipIds.length, failures }, null, 2)}`);
+
+    if (failures.length) {
+      throw new Error(`Modifier chip selection checks failed:\n${failures.join('\n')}`);
+    }
   }
 
   if (scenarioName === 'temporary') {

@@ -1,10 +1,11 @@
 import * as React from 'react';
 import cx from 'classnames';
-import { type AbilityName, type ItemName } from '@smogon/calc';
 import { Button } from '@showdex/components/ui';
 import { PokemonStatNames } from '@showdex/consts/dex';
 import { calcdexSlice, useDispatch } from '@showdex/redux/store';
 import { traceHackmonsLatency } from '@showdex/features/hackmons-cup-inference/latencyTrace';
+import { buildModifierSelectionPayload } from '@showdex/features/hackmons-cup-inference/modifierSelection';
+import { type HackmonsDamageMatch, type HackmonsInferredModifier } from '@showdex/features/hackmons-cup-inference/types';
 import { useCalcdexPokeContext } from '../CalcdexPokeContext';
 import styles from './HackmonsSpreadEstimate.module.scss';
 
@@ -22,6 +23,28 @@ const formatSpread = (
 ): string => PokemonStatNames
   .map((stat) => `${stat.toUpperCase()} ${spread?.[stat] ?? 0}`)
   .join(' / ');
+
+const serializeMatches = (
+  matches: HackmonsDamageMatch[] = [],
+): string => JSON.stringify(matches.map((match) => ({
+  eventId: match.eventId,
+  turn: match.turn,
+  moveName: match.moveName,
+  observedDamage: match.observedDamage,
+  medianDamage: match.medianDamage,
+  rollRange: match.rollRange,
+  distance: match.distance,
+  error: match.error,
+  outlier: match.outlier,
+  explainedBy: match.explainedBy,
+  ko: match.ko,
+})));
+
+const serializeModifiers = (
+  modifiers: HackmonsInferredModifier[] = [],
+): string => JSON.stringify(modifiers, (key, value) => (
+  key === 'candidateMatches' ? undefined : value
+));
 
 const formatModifierScope = (
   scope: string | { type?: string; types?: string[]; moveTag?: string; },
@@ -87,31 +110,59 @@ export const HackmonsSpreadEstimate = ({
   const pokemonId = pokemon?.calcdexId;
   const inference = pokemonId ? state.hackmonsInference?.[pokemonId] : null;
   const estimate = inference?.estimate;
+  const inferredModifiers = React.useMemo(
+    () => estimate?.inferredModifiers || [],
+    [estimate?.inferredModifiers],
+  );
+  const [selectedModifierIds, setSelectedModifierIds] = React.useState<Record<string, string>>({});
+  const selectedModifierId = pokemonId ? selectedModifierIds[pokemonId] || '' : '';
+  const selectedModifier = inferredModifiers.find((inferredModifier) => (
+    inferredModifier.modifier.id === selectedModifierId
+  ));
+  const selectedMatches = selectedModifier?.candidateMatches || estimate?.matches || [];
   const isOpponent = state.authPlayerKey
     ? playerKey !== state.authPlayerKey
     : playerKey === state.opponentKey;
+
+  React.useEffect(() => {
+    if (!pokemonId || !selectedModifierId || inferredModifiers.some((modifier) => (
+      modifier.modifier.id === selectedModifierId
+    ))) {
+      return;
+    }
+
+    setSelectedModifierIds((selected) => {
+      if (!(pokemonId in selected)) {
+        return selected;
+      }
+
+      const next = { ...selected };
+      delete next[pokemonId];
+
+      return next;
+    });
+  }, [inferredModifiers, pokemonId, selectedModifierId]);
 
   const applyEstimate = () => {
     if (!estimate) {
       return;
     }
 
-    updatePokemon({
-      nature: estimate.nature,
-      ivs: {
-        ...pokemon?.ivs,
-        ...estimate.ivs,
-      },
-      evs: {
-        ...pokemon?.evs,
-        ...estimate.evs,
-      },
-      // hackmons abilities/items are random, so the preset guess (held in dirtyAbility/dirtyItem) is
-      // noise -- clear it so the calc matches the neutral assumption the inference is computed under.
-      // game-revealed values live in ability/item and are left untouched.
-      dirtyAbility: null,
-      dirtyItem: null,
-    }, 'HackmonsSpreadEstimate:Button~Apply:onPress()');
+    updatePokemon(buildModifierSelectionPayload({
+      selection: estimate.selection,
+      candidateSpread: estimate,
+    }), 'HackmonsSpreadEstimate:Button~Apply:onPress()');
+
+    setSelectedModifierIds((selected) => {
+      if (!pokemonId || !(pokemonId in selected)) {
+        return selected;
+      }
+
+      const next = { ...selected };
+      delete next[pokemonId];
+
+      return next;
+    });
   };
 
   // auto-apply the estimate the first time it appears for a given mon (once per battle), so the
@@ -137,20 +188,8 @@ export const HackmonsSpreadEstimate = ({
     }
 
     const eventCount = inference?.events.length || 0;
-    const estimateEvents = JSON.stringify((estimate.matches || []).map((match) => ({
-      eventId: match.eventId,
-      turn: match.turn,
-      moveName: match.moveName,
-      observedDamage: match.observedDamage,
-      medianDamage: match.medianDamage,
-      rollRange: match.rollRange,
-      distance: match.distance,
-      error: match.error,
-      outlier: match.outlier,
-      explainedBy: match.explainedBy,
-      ko: match.ko,
-    })));
-    const modifierEvents = JSON.stringify(estimate.inferredModifiers || []);
+    const estimateEvents = serializeMatches(estimate.matches);
+    const modifierEvents = serializeModifiers(estimate.inferredModifiers);
 
     traceHackmonsLatency('estimateRendered', {
       battleId: state.battleId,
@@ -168,42 +207,34 @@ export const HackmonsSpreadEstimate = ({
   const speedNotes = [...new Set((inference.speedNotes || []).filter(Boolean))];
   const modeledEvents = inference.events.length;
   const outlierEvents = (estimate.matches || []).filter((match) => !!match.outlier).length;
-  const inferredModifiers = estimate.inferredModifiers || [];
-  const estimateEvents = JSON.stringify((estimate.matches || []).map((match) => ({
-    eventId: match.eventId,
-    turn: match.turn,
-    moveName: match.moveName,
-    observedDamage: match.observedDamage,
-    medianDamage: match.medianDamage,
-    rollRange: match.rollRange,
-    distance: match.distance,
-    error: match.error,
-    outlier: match.outlier,
-    explainedBy: match.explainedBy,
-    ko: match.ko,
-  })));
-  const modifierEvents = JSON.stringify(inferredModifiers);
+  const estimateEvents = serializeMatches(estimate.matches);
+  const selectedEvents = serializeMatches(selectedMatches);
+  const modifierEvents = serializeModifiers(inferredModifiers);
 
   const resetEstimate = () => dispatch(calcdexSlice.actions.resetHackmonsInference({
     battleId: state.battleId,
     pokemonId,
   }));
 
-  const applyModifier = (inferredModifier: typeof inferredModifiers[number]) => {
-    const { modifier, candidateSpread } = inferredModifier;
+  const resetSelection = () => {
+    setSelectedModifierIds((selected) => {
+      if (!pokemonId || !(pokemonId in selected)) {
+        return selected;
+      }
 
-    updatePokemon({
-      // re-coheres the guessed spread with the modifier being selected -- e.g. Ice Scales halving
-      // special damage taken removes the need for the max-SpDef assumption that was only compensating
-      // for it being unconfirmed, so that compensation shouldn't linger once the modifier is applied
-      ...(candidateSpread ? {
-        nature: candidateSpread.nature,
-        ivs: { ...pokemon?.ivs, ...candidateSpread.ivs },
-        evs: { ...pokemon?.evs, ...candidateSpread.evs },
-      } : null),
-      ...(modifier.slot === 'item' ? { dirtyItem: modifier.representative as ItemName } : null),
-      ...(modifier.slot === 'ability' ? { dirtyAbility: modifier.representative as AbilityName } : null),
-    }, 'HackmonsSpreadEstimate:Modifier:onPress()');
+      const next = { ...selected };
+      delete next[pokemonId];
+
+      return next;
+    });
+  };
+
+  const applyModifier = (inferredModifier: typeof inferredModifiers[number]) => {
+    updatePokemon(buildModifierSelectionPayload(inferredModifier), 'HackmonsSpreadEstimate:Modifier:onPress()');
+    setSelectedModifierIds((selected) => ({
+      ...selected,
+      ...(pokemonId ? { [pokemonId]: inferredModifier.modifier.id } : null),
+    }));
   };
 
   return (
@@ -213,6 +244,9 @@ export const HackmonsSpreadEstimate = ({
       data-hackmons-event-count={modeledEvents}
       data-hackmons-match-count={estimate.matches?.length || 0}
       data-hackmons-estimate-events={estimateEvents}
+      data-hackmons-selected-modifier={selectedModifierId}
+      data-hackmons-selected-events={selectedEvents}
+      data-hackmons-estimate-selection={JSON.stringify(estimate.selection)}
       data-hackmons-speed-notes={JSON.stringify(speedNotes)}
       data-hackmons-modifiers={modifierEvents}
       data-hackmons-ignored-count={inference.ignoredEventCount || 0}
@@ -258,6 +292,7 @@ export const HackmonsSpreadEstimate = ({
               className={cx(styles.modifier, {
                 [styles.possible]: !modifier.adopted,
               })}
+              data-hackmons-modifier-id={modifier.modifier.id}
               role="button"
               tabIndex={0}
               onClick={() => applyModifier(modifier)}
@@ -277,7 +312,7 @@ export const HackmonsSpreadEstimate = ({
         {inference.ignoredEventCount ? `, ${inference.ignoredEventCount} unsupported ignored` : ''}
       </div>
 
-      {!!estimate.matches?.length && (
+      {!!selectedMatches.length && (
         <div className={styles.debug}>
           <span
             className={styles.label}
@@ -291,7 +326,7 @@ export const HackmonsSpreadEstimate = ({
           </span>
           {debugExpanded && (
             <div className={styles.debugMatches}>
-              {estimate.matches.map((match) => (
+              {selectedMatches.map((match) => (
                 <div
                   key={match.eventId}
                   className={cx(styles.debugMatchRow, {
@@ -326,7 +361,10 @@ export const HackmonsSpreadEstimate = ({
           className={styles.actionButton}
           label="Reset"
           hoverScale={1}
-          onPress={resetEstimate}
+          onPress={() => {
+            resetSelection();
+            resetEstimate();
+          }}
         />
       </div>
     </section>

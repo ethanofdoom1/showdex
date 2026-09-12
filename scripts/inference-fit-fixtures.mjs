@@ -196,6 +196,7 @@ const forwardRolls = (spread, target) => {
 };
 
 const results = [];
+let FAILED = false;
 
 if (MODE === 'forward') {
   const natures = ['Adamant', 'Serious', 'Modest'];
@@ -309,6 +310,178 @@ if (MODE === 'forward') {
     const { ms, out } = timeIt('latency-distinct-' + n, buildDistinct(n));
     results.push({ kind: 'distinct', events: n, ms, outliers: out.outliers, nature: out.nature, evs: out.evs.atk, ivs: out.ivs.atk });
   }
+} else if (MODE === 'modifiers') {
+  // MULTI-HYPOTHESIS FIXTURE (architect-owned; slice 8). ONE Body Slam whose observed 115 is
+  // unreachable by ANY of Mew's 143 reachable Atk stats at x1 (MODE=forward oracle, re-derived
+  // 2026-08-23: 0 stats cover 115 at x1, 34 at x1.3, 47 at x1.5, 37 at x2). A single supporting
+  // event can never be ADOPTED (adoption needs >= 2), so every surviving class lands in possible
+  // -- the exact multi-chip situation the UI must let the user switch between, and the one live
+  // unseeded battles cannot be made to produce on demand.
+  const modifierEvents = [
+    damageEvent({ id: 'mod1', turn: 1, moveName: 'Body Slam', damage: 115, target: 'Vaporeon' }),
+  ];
+
+  // the candidate's item must be UNKNOWN for item-slot classes to be proposed at all
+  // (candidateItemPinned(): a known item pins the slot), which is the state a Hackmons opponent is
+  // actually in before it reveals one
+  const modifierBaseState = createState('modifiers');
+  const modifierState = {
+    ...modifierBaseState,
+    p2: {
+      ...modifierBaseState.p2,
+      pokemon: modifierBaseState.p2.pokemon.map((mon) => ({ ...mon, item: '', dirtyItem: null })),
+    },
+  };
+  const modifierOutput = inferHackmonsSpread(modifierState, modifierEvents, 0);
+  const modifierMon = Object.values(modifierOutput)[0] || {};
+  const modifierEstimate = modifierMon.estimate || {};
+  const mods = modifierEstimate.inferredModifiers || [];
+
+  const clauses = [];
+  const clause = (id, ok, detail) => clauses.push({ id, ok: !!ok, detail });
+
+  const fullSpread = (spread) => !!spread
+    && typeof spread.nature === 'string'
+    && ['hp', 'atk', 'def', 'spa', 'spd', 'spe'].every((s) => (
+      typeof spread.ivs?.[s] === 'number' && typeof spread.evs?.[s] === 'number'
+    ));
+
+  const inRange = (match) => Array.isArray(match?.rollRange)
+    && match.rollRange.length === 2
+    && match.observedDamage >= match.rollRange[0]
+    && match.observedDamage <= match.rollRange[1];
+
+  // M1 -- the fixture actually reaches the multi-hypothesis branch (guards every "for all" below)
+  clause('M1-two-unadopted-hypotheses', mods.length >= 2 && mods.every((m) => m.adopted === false), {
+    count: mods.length,
+    ids: mods.map((m) => m.modifier?.id),
+    adopted: mods.map((m) => m.adopted),
+  });
+
+  // M2 -- both slots are represented, so "clicking the ability one must clear the item one" is a
+  // situation this fixture can actually distinguish
+  const slots = [...new Set(mods.map((m) => m.modifier?.slot))].sort();
+  clause('M2-both-slots-proposed', slots.includes('item') && slots.includes('ability'), { slots });
+
+  // M3 -- every hypothesis publishes a COMPLETE spread (the UI overrides the whole set from it)
+  clause('M3-complete-candidate-spreads', mods.length >= 2 && mods.every((m) => fullSpread(m.candidateSpread)), {
+    spreads: mods.map((m) => ({ id: m.modifier?.id, nature: m.candidateSpread?.nature, atkEv: m.candidateSpread?.evs?.atk, atkIv: m.candidateSpread?.ivs?.atk })),
+  });
+
+  // M4 -- every hypothesis publishes its OWN per-event matches, one per input event
+  clause('M4-candidate-matches-per-event', mods.length >= 2 && mods.every((m) => (
+    Array.isArray(m.candidateMatches)
+      && m.candidateMatches.length === modifierEvents.length
+      && m.candidateMatches.every((match, i) => (
+        match?.eventId === modifierEvents[i].id
+          && Number.isFinite(match?.logLikelihood)
+          && Array.isArray(match?.rollRange)
+          && match.rollRange.length === 2
+          && match.observedDamage === modifierEvents[i].damage
+      ))
+  )), {
+    lengths: mods.map((m) => (Array.isArray(m.candidateMatches) ? m.candidateMatches.length : null)),
+    eventCount: modifierEvents.length,
+  });
+
+  // M5 -- under its OWN hypothesis, each suggestion's supporting event is IN RANGE and carries no
+  // outlier: the debug row a user sees after clicking that chip shows a consistent damage fit
+  clause('M5-supporting-events-consistent', mods.length >= 2 && mods.every((m) => (
+    (m.supportingEventIds || []).length > 0
+      && (m.supportingEventIds || []).every((eventId) => {
+        const match = (m.candidateMatches || []).find((candidate) => candidate?.eventId === eventId);
+
+        return inRange(match) && !match?.outlier;
+      })
+  )), {
+    rows: mods.map((m) => ({
+      id: m.modifier?.id,
+      supporting: m.supportingEventIds,
+      matches: (m.candidateMatches || []).map((match) => ({ eventId: match?.eventId, observed: match?.observedDamage, range: match?.rollRange, outlier: match?.outlier || null })),
+    })),
+  });
+
+  // M6 -- DISCRIMINATION (clause CORRECTED 2026-08-24, see below). Each hypothesis must have been
+  // fitted independently: its spread must differ from another hypothesis's, and its modelled range
+  // for the event must differ from the PUBLISHED (neutral) estimate's range for that same event.
+  //
+  // The clause originally frozen here also demanded that two hypotheses with different multipliers
+  // report DIFFERENT roll ranges from EACH OTHER. That premise is arithmetically wrong and no
+  // correct implementation can satisfy it: modelled damage depends on the EFFECTIVE attack stat
+  // (raw x multiplier), so two hypotheses explaining one observation converge on the same effective
+  // value from different raw spreads -- measured here, Huge Power fits Bold/1 IV/96 EV = raw 207,
+  // x2 = 414, while Choice Band and Gorilla Tactics fit Bashful/8 IV/252 EV = raw 276, x1.5 = 414.
+  // Identical effective Atk, therefore identical [106,125]. Differing SPREADS at an identical range
+  // is exactly the user-visible property this slice is for, not a failure of it.
+  // The corrected comparison is the copy-detection the clause was always meant to be, and it rests
+  // on an oracle that predates the implementation: M7 froze the published neutral range at [75,89]
+  // and M5 requires the observation (115) to be IN RANGE under each hypothesis, so a hypothesis
+  // that merely echoed the published matches is caught with certainty.
+  const rangeKey = (m) => JSON.stringify((m.candidateMatches || []).map((match) => match?.rollRange));
+  const spreadKey = (m) => JSON.stringify([m.candidateSpread?.nature, m.candidateSpread?.ivs?.atk, m.candidateSpread?.evs?.atk]);
+  const publishedRangeKey = JSON.stringify((modifierEstimate.matches || []).map((match) => match?.rollRange));
+  const distinctMultipliers = [...new Set(mods.map((m) => m.modifier?.multiplier))];
+  const distinctSpreads = [...new Set(mods.map(spreadKey))];
+  const echoesPublished = mods.filter((m) => rangeKey(m) === publishedRangeKey);
+  clause('M6-hypotheses-fitted-independently', distinctMultipliers.length >= 2
+    && distinctSpreads.length >= 2
+    && mods.length >= 2
+    && !echoesPublished.length, {
+    distinctMultipliers,
+    distinctSpreads: distinctSpreads.length,
+    publishedRange: publishedRangeKey,
+    echoesPublished: echoesPublished.map((m) => m.modifier?.id),
+    perHypothesis: mods.map((m) => ({ id: m.modifier?.id, multiplier: m.modifier?.multiplier, range: (m.candidateMatches || [])[0]?.rollRange || null, atkIv: m.candidateSpread?.ivs?.atk, atkEv: m.candidateSpread?.evs?.atk, nature: m.candidateSpread?.nature })),
+  });
+
+  // M8 -- every hypothesis publishes the COMPLETE slot state its spread was fitted under, not just
+  // its own slot. Nothing is adopted in this fixture, so each hypothesis was fitted alone and its
+  // selection must name its own slot and NULL the other -- which is what makes clicking one chip
+  // able to undo another chip's slot. (The composite case -- a damage and a speed modifier adopted
+  // together, whose shared spread was fitted under BOTH -- is why this is published by the search
+  // rather than derived in the UI from modifier.slot.)
+  clause('M8-selection-names-both-slots', mods.length >= 2 && mods.every((m) => {
+    const keys = Object.keys(m.selection || {}).sort();
+    const ownSlot = m.modifier?.slot === 'ability' ? 'dirtyAbility' : 'dirtyItem';
+    const otherSlot = m.modifier?.slot === 'ability' ? 'dirtyItem' : 'dirtyAbility';
+
+    return keys.length === 2
+      && keys[0] === 'dirtyAbility'
+      && keys[1] === 'dirtyItem'
+      && m.selection[ownSlot] === m.modifier?.representative
+      && m.selection[otherSlot] === null;
+  }), {
+    selections: mods.map((m) => ({ id: m.modifier?.id, slot: m.modifier?.slot, representative: m.modifier?.representative, selection: m.selection || null })),
+  });
+
+  // M9 -- the PUBLISHED estimate carries the same slot state, so pressing Apply can be exactly as
+  // coherent as clicking a chip. Nothing is adopted here, so both slots must be null.
+  clause('M9-estimate-selection', !!modifierEstimate.selection
+    && Object.keys(modifierEstimate.selection).sort().join(',') === 'dirtyAbility,dirtyItem'
+    && modifierEstimate.selection.dirtyAbility === null
+    && modifierEstimate.selection.dirtyItem === null, {
+    selection: modifierEstimate.selection || null,
+    adoptedCount: mods.filter((m) => m.adopted).length,
+  });
+
+  // M7 -- REGRESSION ANCHOR. The published (neutral, no-modifier) estimate still tags the event as a
+  // too-high outlier and still reports its own matches; the per-hypothesis field must be additive.
+  const published = modifierEstimate.matches || [];
+  clause('M7-published-estimate-unchanged', published.length === modifierEvents.length
+    && published[0]?.outlier === 'too-high'
+    && published[0]?.observedDamage === 115, {
+    matches: published.map((match) => ({ eventId: match?.eventId, observed: match?.observedDamage, range: match?.rollRange, outlier: match?.outlier || null })),
+  });
+
+  results.push({
+    mode: 'modifiers',
+    passed: clauses.every((c) => c.ok),
+    clauses,
+  });
+
+  if (!clauses.every((c) => c.ok)) {
+    FAILED = true;
+  }
 } else if (MODE === 'sweep') {
   // observation pairs proven jointly feasible + both-interior by the forward oracle (MODE=forward)
   const pairs = [[60,188],[60,192],[60,197],[60,201],[60,205],[60,210],[60,214],[63,188],[63,192],[63,197],[63,201],[63,205],[63,208],[66,188],[66,197],[66,205],[57,188],[57,197],[57,205],[70,197],[70,205],[70,214],[73,205],[73,214]];
@@ -350,6 +523,10 @@ if (MODE === 'forward') {
 }
 
 process.stdout.write(JSON.stringify(results, null, 1) + '\n');
+
+if (FAILED) {
+  process.exitCode = 1;
+}
 `;
 
 const compile = (config) => new Promise((resolve, reject) => {
@@ -412,13 +589,33 @@ try {
     optimization: { minimize: false },
   });
 
-  const { stdout, stderr } = await execFileAsync(process.execPath, [outputPath], { maxBuffer: 64 * 1024 * 1024 });
+  // a clause-failing MODE must still print its verdict table before the non-zero exit, so the child's
+  // stdout is captured on BOTH paths and its exit code propagated rather than thrown away
+  let stdout = '';
+  let stderr = '';
+  let childExitCode = 0;
+
+  try {
+    ({ stdout, stderr } = await execFileAsync(process.execPath, [outputPath], { maxBuffer: 64 * 1024 * 1024 }));
+  } catch (error) {
+    stdout = error?.stdout || '';
+    stderr = error?.stderr || '';
+    childExitCode = typeof error?.code === 'number' ? error.code : 1;
+
+    if (!stdout) {
+      throw error;
+    }
+  }
 
   if (stderr) {
     throw new Error(stderr);
   }
 
   process.stdout.write(stdout);
+
+  if (childExitCode) {
+    process.exitCode = childExitCode;
+  }
 } finally {
   await rm(tempDirectory, { recursive: true, force: true });
 }

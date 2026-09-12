@@ -24,6 +24,7 @@ import {
   type CalcdexPokemonPreset,
   CalcdexPlayerKeys as AllPlayerKeys,
 } from '@showdex/interfaces/calc';
+import { isInferenceFormat } from '@showdex/features/hackmons-cup-inference/isInferenceFormat';
 import { saveHonkdex } from '@showdex/redux/actions';
 import { calcdexSlice, useDispatch } from '@showdex/redux/store';
 import {
@@ -530,7 +531,11 @@ export const useCalcdexContext = (): CalcdexContextConsumables => {
         // checking payload.ability so as to not overwrite what's actually revealed in battle
         // note: checking `ability` first instead of the usual `dirtyAbility` here;
         // specifically for Mega formes & server-sourced Pokemon, we'll need to update its ability when it Mega evo's
-        if (!abilities.includes(mutated.ability || mutated.dirtyAbility)) {
+        const suppressInferenceAbilityGuess = isInferenceFormat(state.format)
+          && mutated.source !== 'user'
+          && !mutated.ability;
+
+        if (!suppressInferenceAbilityGuess && !abilities.includes(mutated.ability || mutated.dirtyAbility)) {
           [mutated.dirtyAbility] = abilities;
         }
 
@@ -1229,7 +1234,15 @@ export const useCalcdexContext = (): CalcdexContextConsumables => {
 
     const player = clonePlayer(state[playerKey]);
     const prevPokemon = player.pokemon[pokemonIndex];
-    const field: Partial<CalcdexBattleField> = {};
+    const shouldRecomputeAutoField = [
+      'ability',
+      'dirtyAbility',
+      'item',
+      'dirtyItem',
+    ].some((key) => key in pokemon);
+    const field: Partial<CalcdexBattleField> = shouldRecomputeAutoField
+      ? { autoWeather: null, autoTerrain: null }
+      : {};
 
     // this is what we'll be replacing the one at pokemonIndex (i.e., the prevPokemon)
     const mutated: CalcdexPokemon = {
@@ -1252,6 +1265,21 @@ export const useCalcdexContext = (): CalcdexContextConsumables => {
     const playersPayload: Partial<Record<CalcdexPlayerKey, Partial<CalcdexPlayer>>> = {
       [playerKey]: { pokemon: player.pokemon },
     };
+
+    if (shouldRecomputeAutoField) {
+      const fieldPlayerKeys = [state.playerKey, state.opponentKey].filter((pkey) => {
+        const playerSource = pkey === playerKey ? player : state[pkey];
+
+        return playerSource?.active && !!playerSource.pokemon?.length;
+      });
+
+      fieldPlayerKeys.forEach((pkey) => {
+        const playerSource = pkey === playerKey ? player : state[pkey];
+        const selectedPokemon = playerSource?.pokemon?.[playerSource.selectionIndex];
+
+        applyAutoFieldConditions(selectedPokemon, field);
+      });
+    }
 
     applyAutoBoostEffects(playersPayload, field);
     recountRuinAbilities(playersPayload);

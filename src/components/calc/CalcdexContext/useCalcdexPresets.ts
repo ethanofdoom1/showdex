@@ -120,7 +120,9 @@ export const useCalcdexPresets = (
 
     const randoms = state.format.includes('random');
     const playersPayload: Partial<Record<CalcdexPlayerKey, Partial<CalcdexPlayer>>> = {};
-    const field: Partial<CalcdexBattleField> = {};
+    const field: Partial<CalcdexBattleField> = isInferenceFormat(state.format)
+      ? { autoWeather: null, autoTerrain: null }
+      : {};
 
     AllPlayerKeys.forEach((playerKey) => {
       const player = state[playerKey];
@@ -616,6 +618,11 @@ export const useCalcdexPresets = (
               && applyPreset(pokemon, preset, { format: state.format, usage })
           ),
         };
+
+        if (isInferenceFormat(state.format) && pokemon.source !== 'user' && !pokemon.ability) {
+          presetPayload.dirtyAbility = null;
+          presetPayload.dirtyItem = null;
+        }
 
         if (state.operatingMode === 'standalone') {
           presetPayload.autoPreset = false;

@@ -1,6 +1,7 @@
 import { type AbilityName, type GenerationNum, type ItemName } from '@smogon/calc';
 import { PokemonBoostNames, PokemonNatures, PokemonStatNames } from '@showdex/consts/dex';
 import { type CalcdexPokemon } from '@showdex/interfaces/calc';
+import { isInferenceFormat } from '@showdex/features/hackmons-cup-inference/isInferenceFormat';
 import { calcPokemonCalcdexId, populateStatsTable } from '@showdex/utils/calc';
 import {
   clamp,
@@ -396,8 +397,12 @@ export const sanitizePokemon = <
     (!sanitizedPokemon.ability || !!sanitizedPokemon.transformedForme)
       && (!sanitizedPokemon.dirtyAbility || !abilitiesSource.includes(sanitizedPokemon.dirtyAbility))
   );
+  const suppressInferenceAbilityGuess = typeof format === 'string'
+    && isInferenceFormat(format)
+    && sanitizedPokemon.source !== 'user'
+    && !sanitizedPokemon.ability;
 
-  if (updateDirtyAbility) {
+  if (updateDirtyAbility && !suppressInferenceAbilityGuess) {
     [sanitizedPokemon.dirtyAbility] = abilitiesSource;
   }
 

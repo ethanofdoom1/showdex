@@ -1,4 +1,4 @@
-import { type MoveName } from '@smogon/calc';
+import { type AbilityName, type ItemName, type MoveName } from '@smogon/calc';
 import { type CalcdexPlayerKey } from '@showdex/interfaces/calc';
 
 export type HackmonsInferenceConfidence = 'low' | 'medium' | 'high';
@@ -72,6 +72,11 @@ export interface HackmonsModifierClass {
   disqualifiers?: ('choice-lock' | 'no-recoil')[];
 }
 
+export interface HackmonsModifierSelection {
+  dirtyAbility: AbilityName | null;
+  dirtyItem: ItemName | null;
+}
+
 export interface HackmonsInferredModifier {
   modifier: HackmonsModifierClass;
   adopted: boolean;
@@ -88,11 +93,13 @@ export interface HackmonsInferredModifier {
    *
    * @since 1.3.0
    */
-  candidateSpread?: {
+  candidateSpread: {
     nature: Showdown.PokemonNature;
     ivs: Showdown.StatsTable;
     evs: Showdown.StatsTable;
   };
+  candidateMatches: HackmonsDamageMatch[];
+  selection: HackmonsModifierSelection;
 }
 
 export interface HackmonsInferenceFieldSnapshot {
@@ -348,6 +355,7 @@ export interface HackmonsSpreadEstimate {
   confidence: HackmonsInferenceConfidence;
   confidenceRatio: number;
   score: number;
+  selection: HackmonsModifierSelection;
   matches?: HackmonsDamageMatch[];
   inferredModifiers?: HackmonsInferredModifier[];
 }

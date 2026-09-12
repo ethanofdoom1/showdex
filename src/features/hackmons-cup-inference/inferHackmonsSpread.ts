@@ -41,6 +41,7 @@ import {
   type HackmonsInferenceSideSnapshot,
   type HackmonsInferenceState,
   type HackmonsModifierClass,
+  type HackmonsModifierSelection,
   type HackmonsModifierSlot,
 } from './types';
 
@@ -451,6 +452,13 @@ const modifierOverrideFromClass = (
   ...(modifier.slot === 'item' ? { item: modifier.representative as ItemName } : null),
   ...(modifier.slot === 'ability' ? { ability: modifier.representative as AbilityName } : null),
   ...(modifier.scope === 'spe' ? { speedMultiplier: modifier.multiplier } : null),
+});
+
+const modifierSelectionFromOverride = (
+  override?: ModifierOverride,
+): HackmonsModifierSelection => ({
+  dirtyAbility: override?.ability || null,
+  dirtyItem: override?.item || null,
 });
 
 // combines a damage-side and speed-side adopted modifier (e.g. Huge Power + Iron Ball) into one
@@ -2808,6 +2816,8 @@ const searchModifierHypotheses = (
       relation,
       supportingEventIds: supportIds,
       candidateSpread: { nature: candidate.nature, ivs: candidate.ivs, evs: candidate.evs },
+      candidateMatches: matches,
+      selection: modifierSelectionFromOverride(modifierOverride),
     };
 
     // A1 (feasibility-only adoption) assumes outlier-magnitude evidence -- `directEvidence` classes
@@ -3023,6 +3033,8 @@ const searchSpeedModifierHypothesis = (
       relation: trigger.direction === 'faster' ? 'attacker' : 'defender',
       supportingEventIds: trigger.contributingEventIds,
       candidateSpread: { nature: candidate.nature, ivs: candidate.ivs, evs: candidate.evs },
+      candidateMatches: damageMatches,
+      selection: modifierSelectionFromOverride(modifierOverride),
     };
 
     // A3: support threshold -- v1 has no speed-side corroboration source, so require >= 2 raw events
@@ -3798,6 +3810,11 @@ export const inferHackmonsSpread = (
     const adoptedSpeedModifier = speedSearch.adopted;
 
     const best = adoptedSpeedModifier?.candidate || adoptedModifier?.candidate || phaseOneBest;
+    const adoptedOverride = mergeModifierOverrides(
+      adoptedModifier ? modifierOverrideFromClass(adoptedModifier.inferredModifier.modifier) : undefined,
+      adoptedSpeedModifier ? modifierOverrideFromClass(adoptedSpeedModifier.inferredModifier.modifier) : undefined,
+    );
+    const selection = modifierSelectionFromOverride(adoptedOverride);
     const adoptedSupportIds = new Set(adoptedModifier?.inferredModifier.supportingEventIds || []);
     const inferredModifiers = [
       ...(adoptedModifier ? [adoptedModifier.inferredModifier] : []),
@@ -3816,10 +3833,7 @@ export const inferHackmonsSpread = (
         best,
         damageContexts,
         rollCache,
-        mergeModifierOverrides(
-          adoptedModifier ? modifierOverrideFromClass(adoptedModifier.inferredModifier.modifier) : undefined,
-          modifierOverrideFromClass(adoptedSpeedModifier.inferredModifier.modifier),
-        ),
+        adoptedOverride,
       ).map((match) => (
         adoptedModifier && adoptedSupportIds.has(match.eventId) && isInRangeMatch(match)
           ? { ...match, outlier: null, explainedBy: adoptedModifier.inferredModifier.modifier.id }
@@ -3909,6 +3923,7 @@ export const inferHackmonsSpread = (
         confidence: confidenceFromMatches(matches),
         confidenceRatio: scoredMatches.length ? inRangeMatches.length / scoredMatches.length : 0,
         score: best.score,
+        selection,
         matches,
         inferredModifiers,
       } : null,
