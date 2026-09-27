@@ -1356,7 +1356,12 @@ const evaluateCandidateEvent = (
       // and @smogon/calc's (patched) calculate() clones the move before the damage calc -- so a
       // post-construction `move.isCrit = ...` mutation is silently dropped by the clone (unlike `hits`,
       // which the custom clone explicitly carries over)
-      const createEventMove = (isCrit: boolean) => {
+      const dexBasePower = dex.moves.get(formatId(context.moveName) as never)?.basePower;
+      const loggedBasePower = typeof event.powerDoubled === 'boolean' && dexBasePower
+        ? dexBasePower * (event.powerDoubled ? 2 : 1)
+        : null;
+
+      const createEventMove = (isCrit: boolean, basePower = loggedBasePower) => {
         const moveResult = createSmogonMove(
           state.format,
           {
@@ -1371,7 +1376,7 @@ const evaluateCandidateEvent = (
                 basePower: !event.attackerDynamaxed
                   && dex.moves.get(formatId(context.moveName) as never)?.isMax
                   ? 1
-                  : attackerWithEventHp.moveOverrides?.[context.moveName]?.basePower,
+                  : basePower ?? attackerWithEventHp.moveOverrides?.[context.moveName]?.basePower,
                 alwaysCriticalHits: isCrit,
               },
             },
@@ -1417,11 +1422,27 @@ const evaluateCandidateEvent = (
         excludeEotDamage: true,
       };
 
-      const result = calculate(dex, attacker, smogonDefender, move, field, mods);
+      // Payback/Bolt Beak/Fishious Rend: the calc doubles these again from its own guess at who moved
+      // first (comparing Speeds) -- when that disagrees with the log, rescale the override so the power
+      // it lands on is the logged one
+      const calculateEventMove = (eventMove: typeof move, isCrit: boolean) => {
+        const eventResult = calculate(dex, attacker, smogonDefender, eventMove, field, mods);
+        const calcBasePower = (eventResult as { rawDesc?: { moveBP?: number; }; })?.rawDesc?.moveBP;
+
+        if (!loggedBasePower || !calcBasePower || calcBasePower === loggedBasePower) {
+          return eventResult;
+        }
+
+        const rescaledMove = createEventMove(isCrit, (loggedBasePower * loggedBasePower) / calcBasePower)?.[0];
+
+        return rescaledMove ? calculate(dex, attacker, smogonDefender, rescaledMove, field, mods) : eventResult;
+      };
+
+      const result = calculateEventMove(move, anyCrit);
       const plainMove = partialCrit ? createEventMove(false)?.[0] : null;
       const critDistributions = plainMove ? extractHitDistributions(result) : [];
       const plainDistributions = plainMove
-        ? extractHitDistributions(calculate(dex, attacker, smogonDefender, plainMove, field, mods))
+        ? extractHitDistributions(calculateEventMove(plainMove, false))
         : [];
 
       // a multi-hit move that crit on only some of its hits: each hit's rolls come from the calc that
@@ -1724,6 +1745,7 @@ const damageContextSignature = (
     resolveEventHitCount(event),
     !!event.attackerDynamaxed,
     event.attackerHitCounter || 0,
+    event.powerDoubled,
     event.attackerMoveRepeatCount || 0,
     !!event.attackerDefenseCurled,
     cloneBoostSnapshot(event.attackerBoosts),

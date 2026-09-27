@@ -66,6 +66,7 @@ interface PendingDamageEvent {
   maxHp: number;
   totalDamage: number;
   hitDamages: number[];
+  powerDoubled?: boolean;
   critHits: boolean[];
   recoilObserved?: boolean;
   effectiveness?: HackmonsDamageEffectiveness;
@@ -101,6 +102,32 @@ const FormulaBypassingMoveIds = new Set([
 const unmarkedEffectiveness = (
   moveName: string,
 ): HackmonsDamageEffectiveness => (formatId(moveName) === 'struggle' ? undefined : 'neutral');
+
+interface TurnHistory {
+  hitByTarget: boolean;
+  targetHurt: boolean;
+  targetActed: boolean;
+  targetSwitchedIn: boolean;
+  targetSwitchingOut: boolean;
+}
+
+// the sim's basePowerCallback for each move that doubles on something earlier in the turn
+const turnHistoryPowerDoubled = (
+  moveId: string,
+  turn: TurnHistory,
+): boolean => {
+  switch (moveId) {
+    case 'avalanche':
+    case 'revenge': return turn.hitByTarget;
+    case 'assurance': return turn.targetHurt;
+    // doubled unless the target has yet to move (`queue.willMove`) or just switched in
+    case 'payback': return turn.targetActed && !turn.targetSwitchedIn;
+    case 'boltbeak':
+    case 'fishiousrend': return turn.targetSwitchedIn || !turn.targetActed;
+    case 'pursuit': return turn.targetSwitchingOut;
+    default: return undefined;
+  }
+};
 
 const cloneBoosts = (
   boosts?: Partial<Showdown.StatsTableNoHp>,
@@ -369,6 +396,13 @@ const processChunk = (
     const orderForcedIds = new Set<string>();
     const instructedIds = new Set<string>();
 
+    // this turn's history, for the moves turnHistoryPowerDoubled() covers
+    const directHits = new Set<string>(); // `${victimId}|${attackerId}`
+    const hurtIds = new Set<string>();
+    const actedIds = new Set<string>();
+    const switchedInIds = new Set<string>();
+    const pursuitTargetIds = new Set<string>();
+
     // the target of a Future Sight/Doom Desire that just came due: its hit is logged like a move's,
     // but with no `move` line of its own, so it would land on whichever move came last
     let delayedHitTargetId: string = null;
@@ -406,6 +440,7 @@ const processChunk = (
           attackerDefenseCurled: pendingMove?.defenseCurled,
           attackerStint: pendingMove?.attackerStint,
           defenderStint: pendingEvent.defenderStint,
+          powerDoubled: pendingEvent.powerDoubled,
           hitDamages: [...pendingEvent.hitDamages],
           recoilObserved: !!pendingEvent.recoilObserved,
           attackerBoosts: cloneBoosts(pendingEvent.attackerBoosts),
@@ -522,6 +557,7 @@ const processChunk = (
         });
         if (!outOfOrder) {
           moveOrder.push(pendingMoves.get(attacker.id));
+          actedIds.add(attacker.id);
         }
 
         return;
@@ -534,6 +570,10 @@ const processChunk = (
         const hp = parseHpToken(parts[4]);
 
         if (pokemon.id) {
+          if (type !== 'replace') {
+            switchedInIds.add(pokemon.id);
+          }
+
           if (type === 'replace' && pokemon.slot) {
             const revealedName = pokemon.name || parseSpeciesName(parts[3]);
             const revealedSpecies = parseSpeciesName(parts[3]) || revealedName;
@@ -683,6 +723,26 @@ const processChunk = (
 
         if (target.id) {
           instructedIds.add(target.id);
+        }
+
+        return;
+      }
+
+      if (type === 'cant') {
+        const pokemon = parsePokemonToken(parts[2]);
+
+        if (pokemon.id) {
+          actedIds.add(pokemon.id);
+        }
+
+        return;
+      }
+
+      if (type === '-activate' && effectId(parts[3]) === 'pursuit') {
+        const pokemon = parsePokemonToken(parts[2]);
+
+        if (pokemon.id) {
+          pursuitTargetIds.add(pokemon.id);
         }
 
         return;
@@ -1004,6 +1064,9 @@ const processChunk = (
       const defender = parsePokemonToken(parts[2]);
       const hp = parseHpToken(parts[3]);
       const from = parts.find((part) => part.startsWith('[from]'));
+      const defenderWasHurt = hurtIds.has(defender.id);
+
+      hurtIds.add(defender.id);
 
       if (from) {
         // indirect damage (item/ability/hazards/recoil/status) -- not usable for inference, but we
@@ -1152,9 +1215,17 @@ const processChunk = (
           defenderSnapshot: getPokemonSnapshot(pokemonState, defender.id),
           rawLine: step,
           defenderStint: (defender.slot ? activeSlotStintState.get(defender.slot) : null) || activeStintState.get(defender.id) || 0,
+          powerDoubled: turnHistoryPowerDoubled(formatId(pendingMove.moveName), {
+            hitByTarget: directHits.has(`${pendingMove.attackerId}|${defender.id}`),
+            targetHurt: defenderWasHurt,
+            targetActed: actedIds.has(defender.id),
+            targetSwitchedIn: switchedInIds.has(defender.id),
+            targetSwitchingOut: pursuitTargetIds.has(defender.id),
+          }),
         });
       }
 
+      directHits.add(`${defender.id}|${pendingMove.attackerId}`);
       hpState.set(defender.id, hp.hp);
       maxHpState.set(defender.id, maxHp);
     });

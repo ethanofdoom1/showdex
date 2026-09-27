@@ -625,6 +625,73 @@ if (MODE === 'forward') {
   results.push({ ...noRain, ok: noRain.modifiers.length > 0 });
 
   FAILED = results.some((result) => !result.ok);
+} else if (MODE === 'powerhistory') {
+  // moves whose power doubles on something earlier in the turn. Observations come from a FORWARD
+  // oracle at one fixed Mew spread with an explicit base power (independent of the code under test),
+  // anchored by a Body Slam at that same spread -- so a correctly modelled event is in range with no
+  // modifier, and an unmodelled one is off by exactly x2.
+  const mewSpread = { nature: 'Adamant', ivs: fullIvs, evs: stats(0, 252, 0, 0, 4, 252) };
+  const forward = (moveName, basePower, target = 'Vaporeon') => {
+    const state = createState('forward-power');
+    const mew = { ...state.p2.pokemon[0], ...mewSpread };
+    const defender = state.p1.pokemon.find((p) => p.speciesForme === target);
+    const field = createSmogonField(state.format, state.gameType, state.field, state.p2, state.p1, [state.p1, state.p2]);
+    const attacker = createSmogonPokemon(state.format, state.gameType, mew, moveName, defender);
+    const smogonDefender = createSmogonPokemon(state.format, state.gameType, defender, null, mew);
+    const run = (bp) => {
+      const withBp = { ...mew, moveOverrides: { [moveName]: { basePower: bp } } };
+      const [move] = createSmogonMove(state.format, withBp, moveName, defender, field) || [];
+
+      return calculate(Dex.forGen(9), attacker, smogonDefender, move, field, { hitBasePowers: null, excludeHazardsDamage: true, excludeEotDamage: true });
+    };
+    let result = run(basePower);
+    const calcBp = result?.rawDesc?.moveBP;
+
+    // the calc re-doubles Payback/Bolt Beak from Speed; land it on the power actually asked for
+    if (calcBp && calcBp !== basePower) {
+      result = run((basePower * basePower) / calcBp);
+    }
+
+    if ((result?.rawDesc?.moveBP || basePower) !== basePower) {
+      throw new Error('forward oracle missed ' + moveName + ' BP ' + basePower);
+    }
+
+    const rolls = result.damage.filter((v) => typeof v === 'number');
+
+    return rolls[Math.floor(rolls.length / 2)];
+  };
+
+  const powerState = (suffix) => {
+    const state = createState(suffix);
+
+    return {
+      ...state,
+      p2: { ...state.p2, pokemon: state.p2.pokemon.map((mon) => ({ ...mon, ability: '', dirtyAbility: null, item: '', dirtyItem: null })) },
+    };
+  };
+  const scenario = (name, moveName, basePower, powerDoubled, effectiveness) => {
+    const events = [
+      damageEvent({ id: name + '0', turn: 1, moveName: 'Body Slam', damage: forward('Body Slam', 85) }),
+      ...[1, 2].map((turn) => ({
+        ...damageEvent({ id: name + turn, turn: turn + 1, moveName, damage: forward(moveName, basePower), effectiveness }),
+        powerDoubled,
+      })),
+    ];
+    const estimate = (Object.values(inferHackmonsSpread(powerState(name), events, 0))[0] || {}).estimate || {};
+    const matches = estimate.matches || [];
+    const modifiers = (estimate.inferredModifiers || []).map((m) => m.modifier?.id + (m.adopted ? ' (adopted)' : ''));
+    const outliers = matches.filter((m) => !!m.outlier).map((m) => m.moveName + ' ' + m.observedDamage + ' ' + JSON.stringify(m.rollRange));
+
+    results.push({ name, modifiers, outliers, ok: !modifiers.length && !outliers.length });
+  };
+
+  scenario('avalanche-doubled', 'Avalanche', 120, true, 'resisted');
+  scenario('payback-doubled', 'Payback', 100, true, 'neutral');
+  scenario('bolt-beak-plain', 'Bolt Beak', 85, false, 'super');
+  // control: an undoubled Avalanche is what the calc already modelled, before and after
+  scenario('control-avalanche-plain', 'Avalanche', 60, false, 'resisted');
+
+  FAILED = results.some((result) => !result.ok);
 } else if (MODE === 'sweep') {
   // observation pairs proven jointly feasible + both-interior by the forward oracle (MODE=forward)
   const pairs = [[60,188],[60,192],[60,197],[60,201],[60,205],[60,210],[60,214],[63,188],[63,192],[63,197],[63,201],[63,205],[63,208],[66,188],[66,197],[66,205],[57,188],[57,197],[57,205],[70,197],[70,205],[70,214],[73,205],[73,214]];

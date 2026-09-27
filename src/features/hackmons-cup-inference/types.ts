@@ -253,6 +253,14 @@ export interface HackmonsInferenceEvent {
   attackerHitCounter?: number;
 
   /**
+   * For a move whose power doubles on something earlier in the same turn (*Avalanche*, *Revenge*,
+   * *Assurance*, *Payback*, *Bolt Beak*, *Fishious Rend*, *Pursuit*), whether it did here. The damage
+   * calc can't see the turn's history (and guesses Payback/Bolt Beak from Speed instead), so the
+   * inference sets the logged power explicitly. `undefined` for every other move.
+   */
+  powerDoubled?: boolean;
+
+  /**
    * Number of consecutive prior turns the attacker has successfully landed this exact move. Feeds
    * *Fury Cutter* & *Rollout*'s variable base power, which doubles with each consecutive successful use.
    *

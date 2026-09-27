@@ -190,6 +190,45 @@ describe('parseHackmonsInferenceEvents()', () => {
     ]);
   });
 
+  it('records whether a turn-history move doubled its power', () => {
+    const doubled = (lines: string[], name: string) => parseHackmonsInferenceEvents([
+      '|switch|p1a: Weavile|Weavile, L50|100/100',
+      '|switch|p2a: Mew|Mew, L50|100/100',
+      '|turn|1',
+      ...lines,
+    ], name).events
+      .filter((event) => event.eventType !== 'speed')
+      .map((event) => [event.moveName, event.powerDoubled]);
+
+    expect(doubled([
+      '|move|p2a: Mew|Body Slam|p1a: Weavile', '|-damage|p1a: Weavile|70/100',
+      '|move|p1a: Weavile|Avalanche|p2a: Mew', '|-damage|p2a: Mew|80/100',
+    ], 'avalanche')).toEqual([['Body Slam', undefined], ['Avalanche', true]]);
+
+    // Bolt Beak doubles only if the target has yet to move; Payback only if it already has
+    expect(doubled([
+      '|move|p2a: Mew|Bolt Beak|p1a: Weavile', '|-damage|p1a: Weavile|70/100',
+      '|move|p1a: Weavile|Payback|p2a: Mew', '|-damage|p2a: Mew|80/100',
+    ], 'order')).toEqual([['Bolt Beak', true], ['Payback', true]]);
+
+    // Assurance counts any damage this turn (here Mew's own Life Orb recoil); a fresh switch-in makes
+    // Payback plain
+    expect(doubled([
+      '|move|p2a: Mew|Body Slam|p1a: Weavile', '|-damage|p1a: Weavile|70/100',
+      '|-damage|p2a: Mew|90/100|[from] item: Life Orb',
+      '|move|p1a: Weavile|Assurance|p2a: Mew', '|-damage|p2a: Mew|60/100',
+    ], 'assurance')).toEqual([['Body Slam', undefined], ['Assurance', true]]);
+    expect(doubled([
+      '|switch|p2a: Blissey|Blissey, L50|100/100',
+      '|move|p1a: Weavile|Payback|p2a: Blissey', '|-damage|p2a: Blissey|90/100',
+    ], 'payback-switch')).toEqual([['Payback', false]]);
+
+    expect(doubled([
+      '|-activate|p2a: Mew|move: Pursuit',
+      '|move|p1a: Weavile|Pursuit|p2a: Mew|[from] move: Pursuit', '|-damage|p2a: Mew|70/100',
+    ], 'pursuit')).toEqual([['Pursuit', true]]);
+  });
+
   it('attributes a multi-hit move\'s crit to the hit it actually landed on', () => {
     const { events } = parseHackmonsInferenceEvents([
       '|switch|p1a: Weavile|Weavile, L50|100/100',
