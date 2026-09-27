@@ -20,7 +20,7 @@ import {
 } from '@showdex/utils/calc';
 import { formatId } from '@showdex/utils/core';
 import { logger, runtimer } from '@showdex/utils/debug';
-import { getGenDexForFormat, getMaxMove } from '@showdex/utils/dex';
+import { getDynamicMoveType, getGenDexForFormat, getMaxMove } from '@showdex/utils/dex';
 import {
   damageEventLogLikelihood,
   ErrorEventLogLikelihood,
@@ -827,11 +827,16 @@ const applyEventPokemonSnapshot = (
 
   const dex = getGenDexForFormat(format);
   const speciesTypes = dex?.species.get((pokemon.transformedForme || pokemon.speciesForme) as never)?.types as Showdown.TypeName[];
-  const types = snapshot.typeChanged && snapshot.types?.length
+  const eventTypes = snapshot.typeChanged && snapshot.types?.length
     ? snapshot.types
     : speciesTypes?.length
       ? speciesTypes
       : pokemon.types;
+  // a Roosting pure Flying type is left Normal (gen 5+, sim Pokemon.getTypes())
+  const roostedTypes = snapshot.roosted && !snapshot.terastallized
+    ? eventTypes?.filter((type) => type !== 'Flying')
+    : null;
+  const types = roostedTypes ? (roostedTypes.length ? roostedTypes : ['Normal'] as Showdown.TypeName[]) : eventTypes;
   const abilityId = formatId(pokemon.dirtyAbility || pokemon.ability);
 
   return {
@@ -1022,11 +1027,125 @@ const effectivenessFromMultiplier = (
   return 'neutral';
 };
 
+// the -ate abilities leave these alone even when they resolve to Normal (sim data/abilities.ts
+// `noModifyType`), and Normalize additionally skips Hidden Power & Struggle. Both also skip Tera Blast
+// while its user is terastallized.
+const AteExcludedMoveIds = new Set([
+  'judgment', 'multiattack', 'naturalgift', 'revelationdance', 'technoblast', 'terrainpulse', 'weatherball',
+]);
+const NormalizeExcludedMoveIds = new Set([...AteExcludedMoveIds, 'hiddenpower', 'struggle']);
+
+// moves whose type comes from something the log never shows for an opponent (a held Plate/Memory/Drive
+// or berry, Hidden Power's IVs), so their natural type -- and their effectiveness line -- is unknowable
+// unless it could be resolved from a known item
+const HiddenTypeMoveIds = new Set(['hiddenpower', 'judgment', 'multiattack', 'naturalgift', 'technoblast']);
+
+interface EventTypeContext {
+  moveId: string;
+  naturalType: Showdown.TypeName;
+  attackerTerastallized: boolean;
+  defenderTypes: Showdown.TypeName[];
+  strongWinds: boolean;
+}
+
+// everything this event's effectiveness line depends on, as of the event -- or null when part of it
+// can't be known. "Natural" = without any type-change ability the log hasn't confirmed, which is
+// exactly what the line is being tested against.
+const resolveEventTypeContext = (
+  state: CalcdexBattleState,
+  event: HackmonsInferenceEvent,
+  context: DamageEventContext,
+): EventTypeContext | null => {
+  const attacker = applyEventPokemonSnapshot(state.format, context?.attackerMatch?.pokemon, event.attackerSnapshot);
+  const defender = applyEventPokemonSnapshot(state.format, context?.defenderMatch?.pokemon, event.defenderSnapshot);
+  const moveName = context?.moveName || event.moveName;
+  const moveId = formatId(moveName);
+  const dexType = getGenDexForFormat(state.format)?.moves.get(moveId as never)?.type as Showdown.TypeName;
+
+  if (!attacker || !defender?.types?.length || !dexType) {
+    return null;
+  }
+
+  const dynamicType = getDynamicMoveType({
+    ...attacker,
+    ability: event.attackerSnapshot?.abilityConfirmed ? attacker.ability : null,
+    dirtyAbility: null,
+    dirtyItem: null,
+  }, moveName, { format: state.format, field: context.eventField });
+
+  if (!dynamicType && HiddenTypeMoveIds.has(moveId)) {
+    return null;
+  }
+
+  return {
+    moveId,
+    naturalType: dynamicType || dexType,
+    attackerTerastallized: !!attacker.terastallized,
+    defenderTypes: defender.terastallized && defender.teraType && defender.teraType !== 'Stellar'
+      ? [defender.teraType]
+      : defender.types,
+    strongWinds: context.eventField?.weather === 'Strong Winds',
+  };
+};
+
+// the effectiveness line the sim would log for `moveType` (sim battle-actions.ts modifyDamage()).
+// Immunity is a separate runImmunity() check and never part of the line, and an event only exists for
+// a hit that landed -- so whatever let it through (Gravity, Smack Down, Iron Ball, Thousand Arrows,
+// Scrappy, Foresight, Ring Target) an immune type counts as neutral here
+const expectedEffectiveness = (
+  state: CalcdexBattleState,
+  typeContext: EventTypeContext,
+  moveType: Showdown.TypeName,
+): HackmonsInferenceEvent['effectiveness'] => {
+  const dex = getGenDexForFormat(state.format);
+  const { moveId, defenderTypes, strongWinds } = typeContext;
+
+  const multiplier = defenderTypes.reduce((total, defenderType) => {
+    let value = typeEffectivenessMultiplier(dex, moveType, [defenderType]) || 1;
+
+    if (moveId === 'freezedry' && defenderType === 'Water') {
+      value = 2;
+    }
+
+    if (moveId === 'flyingpress') {
+      value *= typeEffectivenessMultiplier(dex, 'Flying', [defenderType]) || 1;
+    }
+
+    // Delta Stream's strong winds cancel only the Flying part's weakness
+    if (strongWinds && defenderType === 'Flying' && value > 1) {
+      value = 1;
+    }
+
+    return total * value;
+  }, 1);
+
+  return effectivenessFromMultiplier(multiplier);
+};
+
+// the move's type under a hypothesized -ate ability (`changedType`) or Normalize, following the sim's
+// own onModifyType conditions for each
+const typeUnderAbility = (
+  typeContext: EventTypeContext,
+  changedType: Showdown.TypeName,
+  normalize: boolean,
+): Showdown.TypeName => {
+  const { moveId, naturalType, attackerTerastallized } = typeContext;
+
+  if (moveId === 'terablast' && attackerTerastallized) {
+    return naturalType;
+  }
+
+  if (normalize) {
+    return NormalizeExcludedMoveIds.has(moveId) ? naturalType : 'Normal';
+  }
+
+  return naturalType === 'Normal' && !AteExcludedMoveIds.has(moveId) ? changedType : naturalType;
+};
+
 // whether this event's logged effectiveness line is impossible for the move's NATURAL type against
-// the defender's known/snapshotted types -- direct evidence a type-changing ability (Pixilate,
-// Normalize, ...) is in play, independent of whether the damage magnitude alone would've read as an
-// outlier (Case D: "the effectiveness line is independent, near-conclusive evidence the damage math
-// alone can't provide")
+// the defender at the time -- direct evidence a type-changing ability (Pixilate, Normalize, ...) is in
+// play, independent of whether the damage magnitude alone would've read as an outlier (Case D: "the
+// effectiveness line is independent, near-conclusive evidence the damage math alone can't provide")
 const eventEffectivenessContradicts = (
   state: CalcdexBattleState,
   event: HackmonsInferenceEvent,
@@ -1036,21 +1155,9 @@ const eventEffectivenessContradicts = (
     return false;
   }
 
-  const moveType = getMoveData(state, event)?.type;
-  const defenderTypes = applyEventPokemonSnapshot(
-    state.format,
-    context.defenderMatch?.pokemon,
-    event.defenderSnapshot,
-  )?.types;
+  const typeContext = resolveEventTypeContext(state, event, context);
 
-  if (!moveType || !defenderTypes?.length) {
-    return false;
-  }
-
-  const dex = getGenDexForFormat(state.format);
-  const naturalCategory = effectivenessFromMultiplier(typeEffectivenessMultiplier(dex, moveType, defenderTypes));
-
-  return naturalCategory !== event.effectiveness;
+  return !!typeContext && expectedEffectiveness(state, typeContext, typeContext.naturalType) !== event.effectiveness;
 };
 
 const getMoveInfluence = (
@@ -2582,10 +2689,11 @@ const collectTypeChangeTrigger = (
 };
 
 // scope/type derivation (§4 Group 4): the changed type is DERIVED, not guessed -- a candidate class
-// survives only if it makes EVERY observed effectiveness line, across EVERY event this attacker's
-// matching-natural-type moves produced (not just the one(s) that triggered T4), consistent. Multiple
-// survivors are a genuine tie (e.g. a pure Dragon defender can't distinguish Ice from Fairy) -- adopted
-// via the same best-of ranking every other group uses, same as the rest of this file's ties
+// survives only if it makes EVERY observed effectiveness line this attacker produced consistent,
+// including events it doesn't retype (so a contradiction it can't explain, e.g. an unmodelled
+// mechanic, blocks it rather than getting rubber-stamped). Multiple survivors are a genuine tie (e.g.
+// a pure Dragon defender can't distinguish Ice from Fairy) -- adopted via the same best-of ranking
+// every other group uses, same as the rest of this file's ties
 const typeChangeModifierClasses = (
   state: CalcdexBattleState,
   events: HackmonsInferenceEvent[],
@@ -2596,47 +2704,27 @@ const typeChangeModifierClasses = (
     return [];
   }
 
-  const dex = getGenDexForFormat(state.format);
-  const attackerEvents = events.filter((event) => (
-    event.eventType !== 'speed' && !event.crit && contexts.get(event.id)?.relation === 'attacker' && !!event.effectiveness
+  const evidence = events
+    .filter((event) => (
+      event.eventType !== 'speed' && !event.crit && contexts.get(event.id)?.relation === 'attacker' && !!event.effectiveness
+    ))
+    .map((event) => ({ event, typeContext: resolveEventTypeContext(state, event, contexts.get(event.id)) }))
+    .filter(({ typeContext }) => !!typeContext);
+
+  const explainsAll = (
+    changedType: Showdown.TypeName,
+    normalize: boolean,
+  ): boolean => evidence.some(({ typeContext }) => (
+    typeUnderAbility(typeContext, changedType, normalize) !== typeContext.naturalType
+  )) && evidence.every(({ event, typeContext }) => (
+    expectedEffectiveness(state, typeContext, typeUnderAbility(typeContext, changedType, normalize)) === event.effectiveness
   ));
 
-  const isConsistent = (
-    naturalType: Showdown.TypeName,
-    changedType: Showdown.TypeName,
-  ): boolean => attackerEvents
-    .filter((event) => getMoveData(state, event)?.type === naturalType)
-    .every((event) => {
-      const context = contexts.get(event.id);
-      const defenderTypes = applyEventPokemonSnapshot(
-        state.format,
-        context.defenderMatch?.pokemon,
-        event.defenderSnapshot,
-      )?.types;
+  const classes = (Object.keys(AteModifierByType) as Showdown.TypeName[])
+    .filter((changedType) => explainsAll(changedType, false))
+    .map((changedType) => AteModifierByType[changedType]);
 
-      if (!defenderTypes?.length) {
-        return true;
-      }
-
-      return effectivenessFromMultiplier(typeEffectivenessMultiplier(dex, changedType, defenderTypes)) === event.effectiveness;
-    });
-
-  const classes: HackmonsModifierClass[] = [];
-  const hasNormalMove = attackerEvents.some((event) => getMoveData(state, event)?.type === 'Normal');
-
-  if (hasNormalMove) {
-    (Object.keys(AteModifierByType) as Showdown.TypeName[]).forEach((changedType) => {
-      if (isConsistent('Normal', changedType)) {
-        classes.push(AteModifierByType[changedType]);
-      }
-    });
-  }
-
-  const nonNormalTypes = new Set(
-    attackerEvents.map((event) => getMoveData(state, event)?.type).filter((type) => type && type !== 'Normal'),
-  );
-
-  if (nonNormalTypes.size && [...nonNormalTypes].every((type) => isConsistent(type, 'Normal'))) {
+  if (explainsAll('Normal', true)) {
     classes.push(NormalizeModifier);
   }
 

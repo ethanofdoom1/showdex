@@ -79,6 +79,30 @@ describe('parseHackmonsInferenceEvents()', () => {
     ]);
   });
 
+  it('marks a Roosting defender for the rest of that turn only', () => {
+    const { events } = parseHackmonsInferenceEvents([
+      '|switch|p1a: Skarmory|Skarmory, L50|100/100',
+      '|switch|p2a: Garchomp|Garchomp, L50|100/100',
+      '|turn|1',
+      '|move|p1a: Skarmory|Roost|p1a: Skarmory',
+      '|-singleturn|p1a: Skarmory|move: Roost',
+      '|move|p2a: Garchomp|Earthquake|p1a: Skarmory',
+      '|-damage|p1a: Skarmory|80/100',
+      '|upkeep',
+      '|turn|2',
+      '|move|p2a: Garchomp|Fire Fang|p1a: Skarmory',
+      '|-supereffective|p1a: Skarmory',
+      '|-damage|p1a: Skarmory|50/100',
+    ], 'roost');
+
+    const damageEvents = events.filter((event) => event.eventType !== 'speed');
+
+    expect(damageEvents.map((event) => [event.moveName, !!event.defenderSnapshot?.roosted])).toEqual([
+      ['Earthquake', true],
+      ['Fire Fang', false],
+    ]);
+  });
+
   it('attributes a multi-hit move\'s crit to the hit it actually landed on', () => {
     const { events } = parseHackmonsInferenceEvents([
       '|switch|p1a: Weavile|Weavile, L50|100/100',

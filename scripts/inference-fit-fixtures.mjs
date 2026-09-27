@@ -482,6 +482,86 @@ if (MODE === 'forward') {
   if (!clauses.every((c) => c.ok)) {
     FAILED = true;
   }
+} else if (MODE === 'typeevidence') {
+  // the effectiveness line is evidence for a type-change ability (Pixilate/Normalize/...) ONLY once
+  // every other reason the line can differ from the dex chart is accounted for: an event-time move
+  // type (Tera Blast, Weather Ball), per-move rules (Freeze-Dry, Thousand Arrows), grounding
+  // (Gravity, Roost) and the defender's tera type. Each event observes its OWN modelled median
+  // (pass 1 runs with no effectiveness evidence), so only the mechanic under test can move anything.
+  SPECIES.Tornadus = { base: stats(79, 115, 70, 125, 80, 111), types: ['Flying'], evs: stats(0, 0, 0, 0, 0, 0), nature: 'Serious', maxhp: 299 };
+
+  const evidenceState = (suffix) => {
+    const state = createState(suffix);
+    const tornadus = pokemon({ side: 'p1', name: 'Tornadus', calcdexId: 'p1-tornadus-' + suffix, moves: ['Recover'] });
+
+    return {
+      ...state,
+      p1: { ...state.p1, pokemon: [...state.p1.pokemon, tornadus] },
+      p2: {
+        ...state.p2,
+        pokemon: state.p2.pokemon.map((mon) => ({ ...mon, ability: '', dirtyAbility: null, item: '', dirtyItem: null })),
+      },
+    };
+  };
+
+  const infer = (name, events) => {
+    const output = inferHackmonsSpread(evidenceState(name), events, 0);
+    const estimate = (Object.values(output)[0] || {}).estimate || {};
+
+    return { estimate, matches: estimate.matches || [] };
+  };
+
+  const scenario = (name, specs, scale = 1) => {
+    const draft = specs.map((spec, i) => ({ ...damageEvent({ id: name + i, turn: i + 1, damage: 1, ...spec.base }), ...spec.extra, effectiveness: undefined }));
+    const pass1 = infer(name + '-pass1', draft);
+    // a 0-damage model of the true scenario means the mechanic isn't modelled at all -- observing 0
+    // would make every clause below pass vacuously
+    const unmodelled = specs.some((spec, i) => !(pass1.matches.find((m) => m.eventId === name + i)?.rollRange?.[1] > 0));
+    const events = specs.map((spec, i) => {
+      const range = pass1.matches.find((m) => m.eventId === name + i)?.rollRange || [1, 1];
+      const observed = Math.round(((range[0] + range[1]) / 2) * scale);
+      const maxHp = SPECIES[spec.base.target || 'Vaporeon'].maxhp;
+
+      return { ...damageEvent({ id: name + i, turn: i + 1, ...spec.base, damage: observed }), ...spec.extra, endHp: Math.max(1, maxHp - observed) };
+    });
+    const { estimate, matches } = infer(name, events);
+
+    return {
+      name,
+      unmodelled,
+      modifiers: (estimate.inferredModifiers || []).map((m) => m.modifier?.id + (m.adopted ? ' (adopted)' : '')),
+      outliers: matches.filter((m) => !!m.outlier).map((m) => m.moveName + ' ' + m.observedDamage + ' ' + JSON.stringify(m.rollRange)),
+    };
+  };
+
+  const tera = (teraType) => ({ teraType, terastallized: true });
+  const twice = (spec) => [spec, spec];
+  const negatives = [
+    scenario('tera-blast', twice({ base: { moveName: 'Tera Blast', effectiveness: 'resisted' }, extra: { attackerSnapshot: tera('Water') } })),
+    scenario('weather-ball-rain', twice({ base: { moveName: 'Weather Ball', effectiveness: 'resisted' }, extra: { field: { weather: 'Rain' } } })),
+    scenario('freeze-dry-plus-normal', [
+      ...twice({ base: { moveName: 'Freeze-Dry', effectiveness: 'super' } }),
+      { base: { moveName: 'Body Slam' } },
+    ]),
+    scenario('thousand-arrows', twice({ base: { moveName: 'Thousand Arrows', target: 'Tornadus' } })),
+    scenario('gravity-earthquake', twice({ base: { moveName: 'Earthquake', target: 'Tornadus' }, extra: { field: { isGravity: true } } })),
+    scenario('roost-earthquake', twice({ base: { moveName: 'Earthquake', target: 'Tornadus' }, extra: { defenderSnapshot: { roosted: true } } })),
+    scenario('tera-defender', twice({ base: { moveName: 'Body Slam', effectiveness: 'resisted' }, extra: { defenderSnapshot: tera('Rock') } })),
+    scenario('control-body-slam', twice({ base: { moveName: 'Body Slam' } })),
+  ];
+
+  // positive control: a real Galvanize Body Slam into Water Vaporeon is logged super-effective and
+  // lands at ~x2.4 the neutral roll (x2 type, x1.2 -ate). Electric is the only -ate type that's
+  // super-effective on Water, so the class is unique -- it must still be found and adopted
+  const galvanize = scenario('galvanize', twice({ base: { moveName: 'Body Slam', effectiveness: 'super' } }), 2.4);
+
+  negatives.forEach((result) => results.push({
+    ...result,
+    ok: !result.unmodelled && !result.modifiers.length && !result.outliers.length,
+  }));
+  results.push({ ...galvanize, ok: !galvanize.unmodelled && galvanize.modifiers.includes('ability-ate-electric (adopted)') });
+
+  FAILED = results.some((result) => !result.ok);
 } else if (MODE === 'sweep') {
   // observation pairs proven jointly feasible + both-interior by the forward oracle (MODE=forward)
   const pairs = [[60,188],[60,192],[60,197],[60,201],[60,205],[60,210],[60,214],[63,188],[63,192],[63,197],[63,201],[63,205],[63,208],[66,188],[66,197],[66,205],[57,188],[57,197],[57,205],[70,197],[70,205],[70,214],[73,205],[73,214]];

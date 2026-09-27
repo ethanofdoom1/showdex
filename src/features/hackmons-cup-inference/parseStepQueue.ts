@@ -174,6 +174,7 @@ const clonePokemonSnapshot = (
   abilityConfirmed: !!snapshot?.abilityConfirmed,
   itemConfirmed: !!snapshot?.itemConfirmed,
   revealedItem: snapshot?.revealedItem || null,
+  roosted: !!snapshot?.roosted,
 });
 
 const getPokemonSnapshot = (
@@ -645,6 +646,30 @@ const processChunk = (
             terastallized: true,
           });
         }
+
+        return;
+      }
+
+      // Roost drops the user's Flying type until the end of the turn
+      if (type === '-singleturn' && effectId(parts[3]) === 'roost') {
+        const pokemon = parsePokemonToken(parts[2]);
+
+        if (pokemon.id) {
+          pokemonState.set(pokemon.id, {
+            ...clonePokemonSnapshot(pokemonState.get(pokemon.id)),
+            roosted: true,
+          });
+        }
+
+        return;
+      }
+
+      if (type === 'upkeep' || type === 'turn') {
+        pokemonState.forEach((snapshot, pokemonId) => {
+          if (snapshot.roosted) {
+            pokemonState.set(pokemonId, { ...clonePokemonSnapshot(snapshot), roosted: false });
+          }
+        });
 
         return;
       }

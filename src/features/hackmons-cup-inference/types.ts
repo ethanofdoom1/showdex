@@ -156,6 +156,12 @@ export interface HackmonsInferencePokemonSnapshot {
    * @since 1.3.0
    */
   revealedItem?: string;
+
+  /**
+   * Whether this Pokemon had used Roost this turn, which drops its Flying type until the turn ends
+   * (a terastallized user keeps it).
+   */
+  roosted?: boolean;
 }
 
 export interface HackmonsInferenceAssumptions {
