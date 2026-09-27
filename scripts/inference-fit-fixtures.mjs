@@ -196,31 +196,26 @@ const forwardRolls = (spread, target) => {
 };
 
 // FORWARD ORACLE for any move at an explicit base power (independent of the search): the rolls the
-// given Mew spread produces. The calc re-doubles Payback/Bolt Beak from Speed, so a disagreeing run is
-// rescaled to land on the power actually asked for (and asserted to).
-const forwardMoveRolls = (spread, moveName, basePower, target) => {
+// given Mew spread produces. The calc doubles Payback (moving last) and Bolt Beak/Fishious Rend
+// (moving first) on its own from Speed, so the oracle pins the ORDER that doesn't double -- via raw
+// Speed, which nothing else in those moves reads -- and the asked-for power is exactly what it uses.
+const forwardMoveRolls = (spread, moveName, basePower, target, patches = {}) => {
   const state = createState('forward-move');
-  const mew = { ...state.p2.pokemon[0], ...spread };
-  const defender = state.p1.pokemon.find((p) => p.speciesForme === target);
+  const mew = { ...state.p2.pokemon[0], ...spread, ...patches.attacker };
+  const defender = { ...state.p1.pokemon.find((p) => p.speciesForme === target), ...patches.defender };
   const field = createSmogonField(state.format, state.gameType, state.field, state.p2, state.p1, [state.p1, state.p2]);
   const attacker = createSmogonPokemon(state.format, state.gameType, mew, moveName, defender);
   const smogonDefender = createSmogonPokemon(state.format, state.gameType, defender, null, mew);
-  const run = (bp) => {
-    const withBp = { ...mew, moveOverrides: { [moveName]: { basePower: bp } } };
-    const [move] = createSmogonMove(state.format, withBp, moveName, defender, field) || [];
+  const neutralOrder = { Payback: 'first', 'Bolt Beak': 'last', 'Fishious Rend': 'last' }[moveName];
 
-    return calculate(Dex.forGen(9), attacker, smogonDefender, move, field, { hitBasePowers: null, excludeHazardsDamage: true, excludeEotDamage: true });
-  };
-  let result = run(basePower);
-  const calcBp = result?.rawDesc?.moveBP;
-
-  if (calcBp && calcBp !== basePower) {
-    result = run((basePower * basePower) / calcBp);
+  if (neutralOrder) {
+    attacker.rawStats.spe = neutralOrder === 'first' ? 9999 : 1;
+    smogonDefender.rawStats.spe = neutralOrder === 'first' ? 1 : 9999;
   }
 
-  if ((result?.rawDesc?.moveBP || basePower) !== basePower) {
-    throw new Error('forward oracle missed ' + moveName + ' BP ' + basePower);
-  }
+  const withBp = { ...mew, moveOverrides: { [moveName]: { basePower } } };
+  const [move] = createSmogonMove(state.format, withBp, moveName, defender, field) || [];
+  const result = calculate(Dex.forGen(9), attacker, smogonDefender, move, field, { hitBasePowers: null, excludeHazardsDamage: true, excludeEotDamage: true });
 
   return result.damage.filter((v) => typeof v === 'number');
 };
@@ -667,23 +662,25 @@ if (MODE === 'forward') {
     return rolls[Math.floor(rolls.length / 2)];
   };
 
-  const powerState = (suffix) => {
+  const powerState = (suffix, item = '') => {
     const state = createState(suffix);
 
     return {
       ...state,
-      p2: { ...state.p2, pokemon: state.p2.pokemon.map((mon) => ({ ...mon, ability: '', dirtyAbility: null, item: '', dirtyItem: null })) },
+      p2: { ...state.p2, pokemon: state.p2.pokemon.map((mon) => ({ ...mon, ability: '', dirtyAbility: null, item, dirtyItem: null })) },
     };
   };
-  const scenario = (name, moveName, basePower, powerDoubled, effectiveness) => {
+  const scenario = (name, moveName, basePower, powerDoubled, effectiveness, item = '') => {
+    const itemRolls = (move, bp) => forwardMoveRolls(mewSpread, move, bp, 'Vaporeon', { attacker: { item } });
+    const median = (rolls) => rolls[Math.floor(rolls.length / 2)];
     const events = [
-      damageEvent({ id: name + '0', turn: 1, moveName: 'Body Slam', damage: forward('Body Slam', 85) }),
+      damageEvent({ id: name + '0', turn: 1, moveName: 'Body Slam', damage: median(itemRolls('Body Slam', 85)) }),
       ...[1, 2].map((turn) => ({
-        ...damageEvent({ id: name + turn, turn: turn + 1, moveName, damage: forward(moveName, basePower), effectiveness }),
+        ...damageEvent({ id: name + turn, turn: turn + 1, moveName, damage: median(itemRolls(moveName, basePower)), effectiveness }),
         powerDoubled,
       })),
     ];
-    const estimate = (Object.values(inferHackmonsSpread(powerState(name), events, 0))[0] || {}).estimate || {};
+    const estimate = (Object.values(inferHackmonsSpread(powerState(name, item), events, 0))[0] || {}).estimate || {};
     const matches = estimate.matches || [];
     const modifiers = (estimate.inferredModifiers || []).map((m) => m.modifier?.id + (m.adopted ? ' (adopted)' : ''));
     const outliers = matches.filter((m) => !!m.outlier).map((m) => m.moveName + ' ' + m.observedDamage + ' ' + JSON.stringify(m.rollRange));
@@ -694,6 +691,8 @@ if (MODE === 'forward') {
   scenario('avalanche-doubled', 'Avalanche', 120, true, 'resisted');
   scenario('payback-doubled', 'Payback', 100, true, 'neutral');
   scenario('bolt-beak-plain', 'Bolt Beak', 85, false, 'super');
+  // Mew's known Black Glasses (x1.2 on Dark moves) must stay applied on top of the doubling
+  scenario('payback-doubled-black-glasses', 'Payback', 100, true, 'neutral', 'Black Glasses');
   // control: an undoubled Avalanche is what the calc already modelled, before and after
   scenario('control-avalanche-plain', 'Avalanche', 60, false, 'resisted');
 

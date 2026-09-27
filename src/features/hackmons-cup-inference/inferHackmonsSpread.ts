@@ -1185,6 +1185,30 @@ const getMoveInfluence = (
   };
 };
 
+// the turn order in which @smogon/calc doubles each move it doubles on its own (gen789.js
+// calculateBasePowerSMSSSV): Payback when moving last, Bolt Beak/Fishious Rend when moving first
+const CalcTurnOrderDoubles: Record<string, 'first' | 'last'> = {
+  payback: 'last',
+  boltbeak: 'first',
+  fishiousrend: 'first',
+};
+
+// copies of the calc's attacker & defender whose raw Speeds (1 vs 9999, capped at 10000 by the calc)
+// stay ordered through any boost/item/ability/Tailwind/paralysis multiplier the calc applies
+const forceCalcTurnOrder = <T extends { clone: () => T; rawStats: { spe: number; }; }>(
+  attacker: T,
+  defender: T,
+  attackerFirst: boolean,
+): [T, T] => {
+  const fastAttacker = attacker.clone();
+  const fastDefender = defender.clone();
+
+  fastAttacker.rawStats.spe = attackerFirst ? 9999 : 1;
+  fastDefender.rawStats.spe = attackerFirst ? 1 : 9999;
+
+  return [fastAttacker, fastDefender];
+};
+
 const eventDamageCensored = (
   event: HackmonsInferenceEvent,
 ): boolean => event.endHp === 0 || !!event.survivalCapped;
@@ -1360,12 +1384,18 @@ const evaluateCandidateEvent = (
       // and @smogon/calc's (patched) calculate() clones the move before the damage calc -- so a
       // post-construction `move.isCrit = ...` mutation is silently dropped by the clone (unlike `hits`,
       // which the custom clone explicitly carries over)
-      const dexBasePower = dex.moves.get(formatId(context.moveName) as never)?.basePower;
-      const loggedBasePower = typeof event.powerDoubled === 'boolean' && dexBasePower
+      const eventMoveId = formatId(context.moveName);
+      const dexBasePower = dex.moves.get(eventMoveId as never)?.basePower;
+      const calcTurnOrder = typeof event.powerDoubled === 'boolean'
+        ? CalcTurnOrderDoubles[eventMoveId]
+        : null;
+      // the calc can't double Avalanche/Revenge/Assurance/Pursuit on the turn's history at all, so the
+      // logged power goes in as the move's base power (its own modifiers still apply on top)
+      const loggedBasePower = typeof event.powerDoubled === 'boolean' && !calcTurnOrder && dexBasePower
         ? dexBasePower * (event.powerDoubled ? 2 : 1)
         : null;
 
-      const createEventMove = (isCrit: boolean, basePower = loggedBasePower) => {
+      const createEventMove = (isCrit: boolean) => {
         const moveResult = createSmogonMove(
           state.format,
           {
@@ -1380,7 +1410,7 @@ const evaluateCandidateEvent = (
                 basePower: !event.attackerDynamaxed
                   && dex.moves.get(formatId(context.moveName) as never)?.isMax
                   ? 1
-                  : basePower ?? attackerWithEventHp.moveOverrides?.[context.moveName]?.basePower,
+                  : loggedBasePower ?? attackerWithEventHp.moveOverrides?.[context.moveName]?.basePower,
                 alwaysCriticalHits: isCrit,
               },
             },
@@ -1426,27 +1456,19 @@ const evaluateCandidateEvent = (
         excludeEotDamage: true,
       };
 
-      // Payback/Bolt Beak/Fishious Rend: the calc doubles these again from its own guess at who moved
-      // first (comparing Speeds) -- when that disagrees with the log, rescale the override so the power
-      // it lands on is the logged one
-      const calculateEventMove = (eventMove: typeof move, isCrit: boolean) => {
-        const eventResult = calculate(dex, attacker, smogonDefender, eventMove, field, mods);
-        const calcBasePower = (eventResult as { rawDesc?: { moveBP?: number; }; })?.rawDesc?.moveBP;
+      // Payback/Bolt Beak/Fishious Rend: the calc doubles these itself, deciding who moved first by
+      // comparing final Speeds (`attacker.stats.spe > defender.stats.spe`, recomputed from rawStats).
+      // Speed feeds nothing else in these moves' damage, so calc-only copies with an extreme raw Speed
+      // pin that decision to the logged order and leave every other modifier to the calc
+      const [calcAttacker, calcDefender] = calcTurnOrder
+        ? forceCalcTurnOrder(attacker, smogonDefender, event.powerDoubled === (calcTurnOrder === 'first'))
+        : [attacker, smogonDefender];
 
-        if (!loggedBasePower || !calcBasePower || calcBasePower === loggedBasePower) {
-          return eventResult;
-        }
-
-        const rescaledMove = createEventMove(isCrit, (loggedBasePower * loggedBasePower) / calcBasePower)?.[0];
-
-        return rescaledMove ? calculate(dex, attacker, smogonDefender, rescaledMove, field, mods) : eventResult;
-      };
-
-      const result = calculateEventMove(move, anyCrit);
+      const result = calculate(dex, calcAttacker, calcDefender, move, field, mods);
       const plainMove = partialCrit ? createEventMove(false)?.[0] : null;
       const critDistributions = plainMove ? extractHitDistributions(result) : [];
       const plainDistributions = plainMove
-        ? extractHitDistributions(calculateEventMove(plainMove, false))
+        ? extractHitDistributions(calculate(dex, calcAttacker, calcDefender, plainMove, field, mods))
         : [];
 
       // a multi-hit move that crit on only some of its hits: each hit's rolls come from the calc that
