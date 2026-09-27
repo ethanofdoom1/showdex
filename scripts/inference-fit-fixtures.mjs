@@ -28,7 +28,7 @@ const mode = process.env.MODE || 'fixtures';
 
 const entrySource = String.raw`
 import { Generations, calculate } from '@smogon/calc';
-import { createSmogonField, createSmogonMove, createSmogonPokemon } from '@showdex/utils/calc';
+import { calcPokemonSpreadStats, createSmogonField, createSmogonMove, createSmogonPokemon } from '@showdex/utils/calc';
 import { inferHackmonsSpread } from '@showdex/features/hackmons-cup-inference/inferHackmonsSpread';
 
 globalThis.Dex = {
@@ -560,6 +560,69 @@ if (MODE === 'forward') {
     ok: !result.unmodelled && !result.modifiers.length && !result.outliers.length,
   }));
   results.push({ ...galvanize, ok: !galvanize.unmodelled && galvanize.modifiers.includes('ability-ate-electric (adopted)') });
+
+  FAILED = results.some((result) => !result.ok);
+} else if (MODE === 'speedevidence') {
+  // turn order is Speed evidence only once priority is known and the known mon's own Speed is
+  // modelled. Deoxys-Attack/Vaporeon are p1 = authPlayerKey (known side); Mew's ability is unknown.
+  const orderEvent = ({ id, faster, fasterMove, slower, slowerMove, field }) => ({
+    eventType: 'speed', id, turn: 1,
+    attackerKey: faster === 'Mew' ? 'p2' : 'p1', defenderKey: slower === 'Mew' ? 'p2' : 'p1',
+    attackerId: (faster === 'Mew' ? 'p2a: ' : 'p1a: ') + faster, defenderId: (slower === 'Mew' ? 'p2a: ' : 'p1a: ') + slower,
+    attackerName: (faster === 'Mew' ? 'p2: ' : 'p1: ') + faster, defenderName: (slower === 'Mew' ? 'p2: ' : 'p1: ') + slower,
+    moveName: fasterMove, slowerMoveName: slowerMove, field, rawLine: '|move|',
+  });
+  const speState = (suffix, vaporeonAbility) => {
+    const state = createState(suffix);
+
+    return {
+      ...state,
+      // the known side's Speed is read from its server stats, as for a real battle's own team
+      p1: {
+        ...state.p1,
+        pokemon: state.p1.pokemon.map((mon) => ({
+          ...mon,
+          ability: mon.speciesForme === 'Vaporeon' && vaporeonAbility ? vaporeonAbility : mon.ability,
+          serverStats: calcPokemonSpreadStats(state.format, mon),
+        })),
+      },
+      p2: { ...state.p2, pokemon: state.p2.pokemon.map((mon) => ({ ...mon, ability: '', dirtyAbility: null, item: '', dirtyItem: null })) },
+    };
+  };
+  const speNature = { Timid: 1.1, Hasty: 1.1, Jolly: 1.1, Naive: 1.1, Brave: 0.9, Relaxed: 0.9, Quiet: 0.9, Sassy: 0.9 };
+  const summarize = (name, state, events) => {
+    const estimate = (Object.values(inferHackmonsSpread(state, events, 0))[0] || {}).estimate || {};
+    const speStat = estimate.ivs && estimate.evs
+      ? Math.floor((Math.floor(((2 * 100 + estimate.ivs.spe + Math.floor(estimate.evs.spe / 4)) * 100) / 100) + 5) * (speNature[estimate.nature] || 1))
+      : null;
+
+    return { name, speStat, modifiers: (estimate.inferredModifiers || []).map((m) => m.modifier?.id + (m.adopted ? ' (adopted)' : '')) };
+  };
+  const bodySlam = damageEvent({ id: 'bs', turn: 1, moveName: 'Body Slam', damage: 70, target: 'Vaporeon' });
+
+  // Thunder Wave is a Status move: an unrevealed Prankster makes Mew's first move pure priority,
+  // so outspeeding 336-Spe Deoxys-Attack (unreachable for ANY Mew spread, max 328) proves nothing
+  const prankster = summarize('prankster-status-first', speState('prankster'), [
+    bodySlam,
+    orderEvent({ id: 'p1', faster: 'Mew', fasterMove: 'Thunder Wave', slower: 'Deoxys-Attack', slowerMove: 'Psycho Boost' }),
+  ]);
+  results.push({ ...prankster, ok: !prankster.modifiers.length });
+
+  // our Swift Swim Vaporeon (166 Spe) is 332 in rain: moving first caps Mew at <= 331, not <= 165
+  const swiftSwim = summarize('our-swift-swim-in-rain', speState('swiftswim', 'Swift Swim'), [
+    bodySlam,
+    orderEvent({ id: 'w1', faster: 'Vaporeon', fasterMove: 'Waterfall', slower: 'Mew', slowerMove: 'Body Slam', field: { weather: 'Rain' } }),
+  ]);
+  results.push({ ...swiftSwim, ok: swiftSwim.speStat > 166 && !swiftSwim.modifiers.length });
+
+  // control: with no rain the 166-Spe Vaporeon moving first is infeasible for EVERY Mew spread (its
+  // minimum is 184: 0 IV/0 EV/-Spe), so a Speed-lowering class must be proposed -- proving the rain,
+  // and not a dead speed event, is what clears the case above
+  const noRain = summarize('control-no-rain', speState('norain', 'Swift Swim'), [
+    bodySlam,
+    orderEvent({ id: 'n1', faster: 'Vaporeon', fasterMove: 'Waterfall', slower: 'Mew', slowerMove: 'Body Slam' }),
+  ]);
+  results.push({ ...noRain, ok: noRain.modifiers.length > 0 });
 
   FAILED = results.some((result) => !result.ok);
 } else if (MODE === 'sweep') {

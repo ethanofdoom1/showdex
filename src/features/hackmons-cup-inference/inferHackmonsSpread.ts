@@ -1604,6 +1604,7 @@ interface SpeedEventContext {
   samePriority: boolean;
   otherRawSpe: number;
   otherItemSpeedMultiplier: number;
+  otherPokemon: CalcdexPokemon;
 }
 
 // `hpOverridden` mirrors applyEventHp()'s own guard: when the event carries this side's HP, the
@@ -1868,14 +1869,97 @@ const resolveDamageEventContext = (
   return resolved;
 };
 
+// a speed event's move priority as of the event, or null when it can't be known: Prankster (Status
+// moves), Gale Wings (Flying moves, full HP only) and Triage (healing moves) raise it silently, so
+// unless the mover's ability is known -- our own side, or revealed -- the order may be priority alone
+const eventMovePriority = (
+  state: CalcdexBattleState,
+  event: HackmonsInferenceEvent,
+  side: 'faster' | 'slower',
+): number | null => {
+  const moveName = side === 'faster' ? event.moveName : event.slowerMoveName;
+  const move = getGenDexForFormat(state.format)?.moves.get(formatId(moveName) as never) as {
+    priority?: number;
+    category?: Showdown.MoveCategory;
+    type?: Showdown.TypeName;
+    flags?: { heal?: 1 | 0; };
+  };
+  const basePriority = (move?.priority || 0)
+    + (formatId(moveName) === 'grassyglide' && event.field?.terrain === 'Grassy' ? 1 : 0);
+  const prankster = move?.category === 'Status';
+  const galeWings = move?.type === 'Flying';
+  const triage = !!move?.flags?.heal;
+
+  if (!prankster && !galeWings && !triage) {
+    return basePriority;
+  }
+
+  const playerKey = side === 'faster' ? event.attackerKey : event.defenderKey;
+  const snapshot = side === 'faster' ? event.attackerSnapshot : event.defenderSnapshot;
+  const pokemon = side === 'faster'
+    ? findPokemonByLogName(state, event.attackerName, event.attackerKey, event.attackerId)?.pokemon
+    : findPokemonByLogName(state, event.defenderName, event.defenderKey, event.defenderId)?.pokemon;
+
+  if (playerKey !== state.authPlayerKey && !snapshot?.abilityConfirmed) {
+    return null;
+  }
+
+  const ability = formatId(pokemon?.ability);
+
+  if (galeWings && ability === 'galewings') {
+    return null;
+  }
+
+  return basePriority
+    + (prankster && ability === 'prankster' ? 1 : 0)
+    + (triage && ability === 'triage' ? 3 : 0);
+};
+
+// T3 guard (audit finding, §12): a speed-order event only reflects raw Speed if BOTH moves shared the
+// same priority bracket -- flushSpeedOrderEvents() (parseStepQueue.ts) builds a 'speed' event between
+// every adjacent differing-attacker pair in a turn's move order with no priority filter at all, so a
+// priority move going first (Gale Wings, Prankster, Quick Claw, ...) would otherwise be misread as a
+// Speed-infeasibility (false Scarf-class T3 trigger) even though priority alone decided that order,
+// independent of either mon's real Speed stat. Mirrors the existing Trick Room/Tailwind suppression
+// pattern -- this just excludes the event from evidence entirely rather than proposing a competing
+// hypothesis for it.
+const eventHasPriorityMismatch = (
+  state: CalcdexBattleState,
+  event: HackmonsInferenceEvent,
+): boolean => {
+  const fasterPriority = eventMovePriority(state, event, 'faster');
+  const slowerPriority = eventMovePriority(state, event, 'slower');
+
+  return fasterPriority === null || slowerPriority === null || fasterPriority !== slowerPriority;
+};
+
+// the known (other) mon's own Speed ability, where the event's field snapshot and status decide it
+// (Unburden, Slow Start and Protosynthesis/Quark Drive depend on state the event doesn't carry)
+const knownAbilitySpeedMultiplier = (
+  pokemon: CalcdexPokemon,
+  field: HackmonsInferenceFieldSnapshot,
+  status: Showdown.PokemonStatus | '',
+): number => {
+  const umbrella = formatId(pokemon?.dirtyItem ?? pokemon?.item) === 'utilityumbrella';
+
+  switch (formatId(pokemon?.ability)) {
+    case 'swiftswim': return !umbrella && ['Rain', 'Heavy Rain'].includes(field?.weather) ? 2 : 1;
+    case 'chlorophyll': return !umbrella && ['Sun', 'Harsh Sunshine'].includes(field?.weather) ? 2 : 1;
+    case 'sandrush': return field?.weather === 'Sand' ? 2 : 1;
+    case 'slushrush': return ['Hail', 'Snow'].includes(field?.weather) ? 2 : 1;
+    case 'surgesurfer': return field?.terrain === 'Electric' ? 2 : 1;
+    // x1.5 with any status, and paralysis no longer halves it (applySpeedModifiers() already did)
+    case 'quickfeet': return status === 'par' ? 3 : status ? 1.5 : 1;
+    default: return 1;
+  }
+};
+
 const resolveSpeedEventContext = (
   state: CalcdexBattleState,
   event: HackmonsInferenceEvent,
   candidatePokemon: CalcdexPokemon,
 ): SpeedEventContext => {
-  const fasterMove = getMoveData(state, event);
-  const slowerMove = getGenDexForFormat(state.format)?.moves.get(formatId(event.slowerMoveName) as never) as { priority?: number; };
-  const samePriority = (fasterMove?.priority || 0) === (slowerMove?.priority || 0);
+  const samePriority = !eventHasPriorityMismatch(state, event);
   const fasterMatch = findPokemonByLogName(state, event.attackerName, event.attackerKey, event.attackerId);
   const slowerMatch = findPokemonByLogName(state, event.defenderName, event.defenderKey, event.defenderId);
   const relation: EventRelation = !fasterMatch?.pokemon || !slowerMatch?.pokemon
@@ -1894,7 +1978,7 @@ const resolveSpeedEventContext = (
   const otherItemSpeedMultiplier = knownItemSpeedMultiplier(otherPokemon);
 
   return {
-    relation, samePriority, otherRawSpe, otherItemSpeedMultiplier,
+    relation, samePriority, otherRawSpe, otherItemSpeedMultiplier, otherPokemon,
   };
 };
 
@@ -1927,9 +2011,12 @@ const resolveCandidateSpeedValues = (
   const candidateSpeed = relation === 'attacker'
     ? applySpeedModifiers(candidateRawSpe, event.attackerBoosts, event.attackerStatus, modifierOverride?.speedMultiplier)
     : applySpeedModifiers(candidateRawSpe, event.defenderBoosts, event.defenderStatus, modifierOverride?.speedMultiplier);
+  const otherStatus = relation === 'attacker' ? event.defenderStatus : event.attackerStatus;
+  const otherMultiplier = otherItemSpeedMultiplier
+    * knownAbilitySpeedMultiplier(context.otherPokemon, event.field, otherStatus);
   const otherSpeed = relation === 'attacker'
-    ? applySpeedModifiers(otherRawSpe, event.defenderBoosts, event.defenderStatus, otherItemSpeedMultiplier)
-    : applySpeedModifiers(otherRawSpe, event.attackerBoosts, event.attackerStatus, otherItemSpeedMultiplier);
+    ? applySpeedModifiers(otherRawSpe, event.defenderBoosts, event.defenderStatus, otherMultiplier)
+    : applySpeedModifiers(otherRawSpe, event.attackerBoosts, event.attackerStatus, otherMultiplier);
 
   return { candidateSpeed, otherSpeed };
 };
@@ -2958,25 +3045,6 @@ interface SpeedTrigger {
 // T3: the tightest speed-order evidence is unsatisfiable at the candidate's own extremal Spe spread
 // -- checked directly against evaluateCandidateSpeedEvent() rather than describeSpeedBound()'s
 // human-readable bound, since that's the same one-sided-violation check the search itself uses
-// T3 guard (audit finding, §12): a speed-order event only reflects raw Speed if BOTH moves shared the
-// same priority bracket -- flushSpeedOrderEvents() (parseStepQueue.ts) builds a 'speed' event between
-// every adjacent differing-attacker pair in a turn's move order with no priority filter at all, so a
-// priority move going first (Gale Wings, Prankster, Quick Claw, ...) would otherwise be misread as a
-// Speed-infeasibility (false Scarf-class T3 trigger) even though priority alone decided that order,
-// independent of either mon's real Speed stat. Mirrors the existing Trick Room/Tailwind suppression
-// pattern -- this just excludes the event from evidence entirely rather than proposing a competing
-// hypothesis for it.
-const eventHasPriorityMismatch = (
-  state: CalcdexBattleState,
-  event: HackmonsInferenceEvent,
-): boolean => {
-  const dex = getGenDexForFormat(state.format);
-  const fasterPriority = dex?.moves.get(formatId(event.moveName) as never)?.priority || 0;
-  const slowerPriority = dex?.moves.get(formatId(event.slowerMoveName) as never)?.priority || 0;
-
-  return fasterPriority !== slowerPriority;
-};
-
 const collectSpeedTrigger = (
   state: CalcdexBattleState,
   events: HackmonsInferenceEvent[],
@@ -3607,10 +3675,7 @@ const describeSpeedBound = (
   const observations: SpeedObservation[] = [];
 
   speedEvents.forEach((event) => {
-    const fasterMove = getMoveData(state, event);
-    const slowerMove = getGenDexForFormat(state.format)?.moves.get(formatId(event.slowerMoveName) as never) as { priority?: number; };
-
-    if ((fasterMove?.priority || 0) !== (slowerMove?.priority || 0)) {
+    if (eventHasPriorityMismatch(state, event)) {
       return;
     }
 
