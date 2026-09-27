@@ -53,7 +53,7 @@ const CoordinateCandidateEvs = [0, 32, 64, 96, DefaultEv, 160, 192, 224, 252];
 const MaxDamageContextGroups = 48;
 const MaxCandidateCount = 4000;
 const NeutralNature = 'Serious' as Showdown.PokemonNature;
-const CacheVersion = 'likelihood-fit-v25';
+const CacheVersion = 'likelihood-fit-v26';
 
 // keyed per defending Pokemon `calcdexId` + that mon's event signature, so a new battle log step
 // only re-searches the mon(s) whose events actually changed (see inferHackmonsSpread())
@@ -1368,6 +1368,10 @@ const evaluateCandidateEvent = (
         applyEventPlayerSide(defenderPlayer, event.defenderSide),
         allPlayers,
       );
+
+      // the hit landed, so a Normal/Fighting move that hit a Ghost had its immunity lifted (Scrappy,
+      // Mind's Eye, Foresight, Odor Sleuth) -- which is exactly, and only, what the calc's isForesight does
+      field.defenderSide.isForesight = true;
 
       const attacker = createSmogonPokemon(
         state.format,

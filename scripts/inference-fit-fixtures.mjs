@@ -514,14 +514,16 @@ if (MODE === 'forward') {
   // (Gravity, Roost) and the defender's tera type. Each event observes its OWN modelled median
   // (pass 1 runs with no effectiveness evidence), so only the mechanic under test can move anything.
   SPECIES.Tornadus = { base: stats(79, 115, 70, 125, 80, 111), types: ['Flying'], evs: stats(0, 0, 0, 0, 0, 0), nature: 'Serious', maxhp: 299 };
+  SPECIES.Gengar = { base: stats(60, 65, 60, 130, 75, 110), types: ['Ghost', 'Poison'], evs: stats(0, 0, 0, 0, 0, 0), nature: 'Serious', maxhp: 261 };
 
   const evidenceState = (suffix) => {
     const state = createState(suffix);
     const tornadus = pokemon({ side: 'p1', name: 'Tornadus', calcdexId: 'p1-tornadus-' + suffix, moves: ['Recover'] });
+    const gengar = pokemon({ side: 'p1', name: 'Gengar', calcdexId: 'p1-gengar-' + suffix, moves: ['Recover'] });
 
     return {
       ...state,
-      p1: { ...state.p1, pokemon: [...state.p1.pokemon, tornadus] },
+      p1: { ...state.p1, pokemon: [...state.p1.pokemon, tornadus, gengar] },
       p2: {
         ...state.p2,
         pokemon: state.p2.pokemon.map((mon) => ({ ...mon, ability: '', dirtyAbility: null, item: '', dirtyItem: null })),
@@ -571,6 +573,8 @@ if (MODE === 'forward') {
     scenario('thousand-arrows', twice({ base: { moveName: 'Thousand Arrows', target: 'Tornadus' } })),
     scenario('gravity-earthquake', twice({ base: { moveName: 'Earthquake', target: 'Tornadus' }, extra: { field: { isGravity: true } } })),
     scenario('roost-earthquake', twice({ base: { moveName: 'Earthquake', target: 'Tornadus' }, extra: { defenderSnapshot: { roosted: true } } })),
+    // a Normal move that LANDED on a Ghost had its immunity lifted (Scrappy, Mind's Eye, Foresight)
+    scenario('landed-on-ghost', twice({ base: { moveName: 'Body Slam', target: 'Gengar' } })),
     scenario('tera-defender', twice({ base: { moveName: 'Body Slam', effectiveness: 'resisted' }, extra: { defenderSnapshot: tera('Rock') } })),
     scenario('control-body-slam', twice({ base: { moveName: 'Body Slam' } })),
   ];
