@@ -209,6 +209,8 @@ const clonePokemonSnapshot = (
   itemConfirmed: !!snapshot?.itemConfirmed,
   revealedItem: snapshot?.revealedItem || null,
   roosted: !!snapshot?.roosted,
+  itemLost: !!snapshot?.itemLost,
+  consumedItem: snapshot?.consumedItem || undefined,
 });
 
 const getPokemonSnapshot = (
@@ -407,6 +409,10 @@ const processChunk = (
     // mons whose NEXT move hit is held at 1 HP -- Focus Sash/Sturdy/Endure/Focus Band are logged before
     // the -damage they cap
     const survivalCapIds = new Set<string>();
+
+    // an item used up by the hit that follows it: a resist berry (`[weaken]`, defender) or a Gem
+    // (`[from] gem`, attacker)
+    const consumedForHit = new Map<string, string>();
 
     // the target of a Future Sight/Doom Desire that just came due: its hit is logged like a move's,
     // but with no `move` line of its own, so it would land on whichever move came last
@@ -617,6 +623,7 @@ const processChunk = (
               abilityConfirmed: !!snapshot.abilityConfirmed,
               itemConfirmed: !!snapshot.itemConfirmed,
               revealedItem: snapshot.revealedItem || null,
+              itemLost: !!snapshot.itemLost,
             });
           }
 
@@ -894,11 +901,17 @@ const processChunk = (
           survivalCapIds.add(pokemon.id);
         }
 
+        if (type === '-enditem' && pokemon.id && parts.some((part) => ['[weaken]', '[from] gem'].includes(part))) {
+          consumedForHit.set(pokemon.id, parts[3]);
+        }
+
         if (pokemon.id && item) {
           pokemonState.set(pokemon.id, {
             ...clonePokemonSnapshot(pokemonState.get(pokemon.id)),
             itemConfirmed: true,
             revealedItem: item,
+            // `-item` is a reveal or a newly gained item (Trick, Pickup, Harvest), `-enditem` a loss
+            itemLost: type === '-enditem',
           });
         }
 
@@ -1238,8 +1251,14 @@ const processChunk = (
           defenderSide: getSideSnapshot(screenState, tailwindState, defender.playerKey),
           attackerFaintCount: faintState.get(pendingMove.attackerKey) || 0,
           defenderFaintCount: faintState.get(defender.playerKey) || 0,
-          attackerSnapshot: getPokemonSnapshot(pokemonState, pendingMove.attackerId),
-          defenderSnapshot: getPokemonSnapshot(pokemonState, defender.id),
+          attackerSnapshot: {
+            ...getPokemonSnapshot(pokemonState, pendingMove.attackerId),
+            consumedItem: consumedForHit.get(pendingMove.attackerId),
+          },
+          defenderSnapshot: {
+            ...getPokemonSnapshot(pokemonState, defender.id),
+            consumedItem: consumedForHit.get(defender.id),
+          },
           rawLine: step,
           defenderStint: (defender.slot ? activeSlotStintState.get(defender.slot) : null) || activeStintState.get(defender.id) || 0,
           survivalCapped,
@@ -1253,6 +1272,8 @@ const processChunk = (
         });
       }
 
+      consumedForHit.delete(pendingMove.attackerId);
+      consumedForHit.delete(defender.id);
       directHits.add(`${defender.id}|${pendingMove.attackerId}`);
       hpState.set(defender.id, hp.hp);
       maxHpState.set(defender.id, maxHp);

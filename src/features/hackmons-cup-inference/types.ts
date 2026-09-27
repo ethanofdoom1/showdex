@@ -162,6 +162,18 @@ export interface HackmonsInferencePokemonSnapshot {
    * (a terastallized user keeps it).
    */
   roosted?: boolean;
+
+  /**
+   * Whether this Pokemon had lost its item (`-enditem`: consumed, Knocked Off, popped, ...) as of this
+   * event. Until then, an item it has since lost (Showdown keeps it as `prevItem`) was still held.
+   */
+  itemLost?: boolean;
+
+  /**
+   * An item consumed by this very hit -- a resist berry (defender) or a Gem (attacker) -- which the
+   * log reports just before the damage, and which still applied to it.
+   */
+  consumedItem?: string;
 }
 
 export interface HackmonsInferenceAssumptions {

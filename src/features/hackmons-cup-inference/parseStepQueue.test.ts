@@ -257,6 +257,40 @@ describe('parseHackmonsInferenceEvents()', () => {
     ], 'sturdy-false-swipe')).toEqual([['Close Combat', 1, true], ['False Swipe', 1, true]]);
   });
 
+  it('records the item each side held at the time of each hit', () => {
+    const { events } = parseHackmonsInferenceEvents([
+      '|switch|p1a: Vaporeon|Vaporeon, L50|100/100',
+      '|switch|p2a: Mew|Mew, L50|100/100',
+      '|turn|1',
+      '|move|p2a: Mew|Body Slam|p1a: Vaporeon',
+      '|-enditem|p2a: Mew|Normal Gem|[from] gem',
+      '|-enditem|p1a: Vaporeon|Chilan Berry|[eat]',
+      '|-enditem|p1a: Vaporeon|Chilan Berry|[weaken]',
+      '|-damage|p1a: Vaporeon|80/100',
+      '|turn|2',
+      '|switch|p2a: Blissey|Blissey, L50|100/100',
+      '|move|p1a: Vaporeon|Knock Off|p2a: Blissey',
+      '|-damage|p2a: Blissey|90/100',
+      '|-enditem|p2a: Blissey|Leftovers|[from] move: Knock Off|[of] p1a: Vaporeon',
+      '|turn|3',
+      '|move|p1a: Vaporeon|Scald|p2a: Blissey',
+      '|-damage|p2a: Blissey|80/100',
+    ], 'event-items');
+
+    expect(events.filter((event) => event.eventType !== 'speed').map((event) => [
+      event.moveName,
+      event.attackerSnapshot?.consumedItem,
+      !!event.attackerSnapshot?.itemLost,
+      event.defenderSnapshot?.consumedItem,
+      !!event.defenderSnapshot?.itemLost,
+    ])).toEqual([
+      ['Body Slam', 'Normal Gem', true, 'Chilan Berry', true],
+      // Knock Off's -enditem follows its own hit: Blissey still held the Leftovers when it landed
+      ['Knock Off', undefined, true, undefined, false],
+      ['Scald', undefined, true, undefined, true],
+    ]);
+  });
+
   it('attributes a multi-hit move\'s crit to the hit it actually landed on', () => {
     const { events } = parseHackmonsInferenceEvents([
       '|switch|p1a: Weavile|Weavile, L50|100/100',

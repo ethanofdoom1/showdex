@@ -737,6 +737,61 @@ if (MODE === 'forward') {
   });
 
   FAILED = results.some((result) => !result.ok);
+} else if (MODE === 'eventitems') {
+  // the item a mon held AT THE TIME of each hit: one consumed by that very hit (a resist berry, a Gem)
+  // or one it only lost later (Knock Off) still applied. Observations come from the forward oracle
+  // with the real item at one fixed Mew spread, so a correctly modelled event is in range with no
+  // modifier; an unmodelled one is off by the item's multiplier.
+  const spread = { nature: 'Adamant', ivs: fullIvs, evs: stats(0, 252, 0, 0, 4, 252) };
+  const median = (rolls) => rolls[Math.floor(rolls.length / 2)];
+  const itemState = (suffix, mewPatch, vaporeonPatch) => {
+    const state = createState(suffix);
+
+    return {
+      ...state,
+      p1: { ...state.p1, pokemon: state.p1.pokemon.map((mon) => (mon.speciesForme === 'Vaporeon' ? { ...mon, ...vaporeonPatch } : mon)) },
+      p2: { ...state.p2, pokemon: state.p2.pokemon.map((mon) => ({ ...mon, ability: '', dirtyAbility: null, item: '', dirtyItem: null, ...mewPatch })) },
+    };
+  };
+  const scenario = (name, state, events) => {
+    const estimate = (Object.values(inferHackmonsSpread(state, events, 0))[0] || {}).estimate || {};
+    const modifiers = (estimate.inferredModifiers || []).map((m) => m.modifier?.id + (m.adopted ? ' (adopted)' : ''));
+    const outliers = (estimate.matches || []).filter((m) => !!m.outlier).map((m) => m.moveName + ' ' + m.observedDamage + ' ' + JSON.stringify(m.rollRange));
+
+    results.push({ name, modifiers, outliers, ok: !modifiers.length && !outliers.length });
+  };
+  const crunch = (id, turn) => damageEvent({ id, turn, moveName: 'Crunch', damage: median(forwardMoveRolls(spread, 'Crunch', 80, 'Vaporeon')) });
+
+  // our Vaporeon ate a Chilan Berry (halves one Normal hit) right before Mew's Body Slam; the Crunch
+  // before it is unaffected either way. Vaporeon's live item is gone; Showdown keeps it as prevItem.
+  const berryRoll = median(forwardMoveRolls(spread, 'Body Slam', 85, 'Vaporeon', { defender: { item: 'Chilan Berry' } }));
+  scenario('resist-berry-eaten', itemState('berry', {}, { item: '', prevItem: 'Chilan Berry' }), [
+    crunch('b0', 1),
+    { ...damageEvent({ id: 'b1', turn: 2, moveName: 'Body Slam', damage: berryRoll }), defenderSnapshot: { consumedItem: 'Chilan Berry', itemLost: true } },
+    { ...damageEvent({ id: 'b2', turn: 3, moveName: 'Body Slam', damage: median(forwardMoveRolls(spread, 'Body Slam', 85, 'Vaporeon')) }), defenderSnapshot: { itemLost: true } },
+  ]);
+
+  // Mew's Normal Gem (x1.3) was spent on its Body Slam
+  const gemRoll = median(forwardMoveRolls(spread, 'Body Slam', 85, 'Vaporeon', { attacker: { item: 'Normal Gem' } }));
+  scenario('gem-spent', itemState('gem', { prevItem: 'Normal Gem' }), [
+    crunch('g0', 1),
+    { ...damageEvent({ id: 'g1', turn: 2, moveName: 'Body Slam', damage: gemRoll }), attackerSnapshot: { consumedItem: 'Normal Gem', itemLost: true } },
+  ]);
+
+  // Mew's Choice Band was knocked off on turn 3: both earlier hits used it
+  const bandRoll = median(forwardMoveRolls(spread, 'Body Slam', 85, 'Vaporeon', { attacker: { item: 'Choice Band' } }));
+  scenario('band-knocked-off-later', itemState('band', { prevItem: 'Choice Band' }), [
+    damageEvent({ id: 'k1', turn: 1, moveName: 'Body Slam', damage: bandRoll }),
+    damageEvent({ id: 'k2', turn: 2, moveName: 'Body Slam', damage: bandRoll }),
+  ]);
+
+  // control: no item, ever
+  scenario('control-no-item', itemState('none'), [
+    crunch('n0', 1),
+    damageEvent({ id: 'n1', turn: 2, moveName: 'Body Slam', damage: median(forwardMoveRolls(spread, 'Body Slam', 85, 'Vaporeon')) }),
+  ]);
+
+  FAILED = results.some((result) => !result.ok);
 } else if (MODE === 'sweep') {
   // observation pairs proven jointly feasible + both-interior by the forward oracle (MODE=forward)
   const pairs = [[60,188],[60,192],[60,197],[60,201],[60,205],[60,210],[60,214],[63,188],[63,192],[63,197],[63,201],[63,205],[63,208],[66,188],[66,197],[66,205],[57,188],[57,197],[57,205],[70,197],[70,205],[70,214],[73,205],[73,214]];

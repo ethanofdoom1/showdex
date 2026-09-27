@@ -816,13 +816,27 @@ const applyEventFieldSnapshot = (
   dirtyTerrain: null,
 });
 
+// the item held at the time of the event: one this very hit consumed (a resist berry, a Gem), else
+// one the mon only lost later (Showdown keeps it as prevItem), else whatever it holds now. No snapshot
+// reads as the parser's default: nothing lost yet.
+const applyEventItem = (
+  pokemon: CalcdexPokemon,
+  snapshot?: HackmonsInferencePokemonSnapshot,
+): CalcdexPokemon => {
+  const eventItem = (snapshot?.consumedItem as ItemName)
+    || (!snapshot?.itemLost && !pokemon?.item && pokemon?.prevItem)
+    || null;
+
+  return eventItem ? { ...pokemon, item: eventItem, dirtyItem: null } : pokemon;
+};
+
 const applyEventPokemonSnapshot = (
   format: string,
   pokemon: CalcdexPokemon,
   snapshot?: HackmonsInferencePokemonSnapshot,
 ): CalcdexPokemon => {
   if (!snapshot) {
-    return pokemon;
+    return applyEventItem(pokemon, snapshot);
   }
 
   const dex = getGenDexForFormat(format);
@@ -839,7 +853,7 @@ const applyEventPokemonSnapshot = (
   const types = roostedTypes ? (roostedTypes.length ? roostedTypes : ['Normal'] as Showdown.TypeName[]) : eventTypes;
   const abilityId = formatId(pokemon.dirtyAbility || pokemon.ability);
 
-  return {
+  return applyEventItem({
     ...pokemon,
     types: types?.length ? [...types] : pokemon.types,
     dirtyTypes: [],
@@ -849,7 +863,7 @@ const applyEventPokemonSnapshot = (
     abilityToggled: snapshot.typeChanged && ['protean', 'libero'].includes(abilityId)
       ? false
       : pokemon.abilityToggled,
-  };
+  }, snapshot);
 };
 
 // Illuminate has no onModify*/onDamage*/onBasePower* hooks anywhere in the (patched) @smogon/calc
@@ -1684,6 +1698,7 @@ const damagePokemonSignature = (
   pokemon?.abilityToggled,
   pokemon?.item,
   pokemon?.dirtyItem,
+  pokemon?.prevItem,
   pokemon?.nature,
   pokemon?.moves,
   pokemon?.moveOverrides,
@@ -2356,7 +2371,7 @@ const candidateAbilityPinned = (
 
 const candidateItemPinned = (
   candidatePokemon: CalcdexPokemon,
-): boolean => !!formatId(candidatePokemon?.item);
+): boolean => !!formatId(candidatePokemon?.item || candidatePokemon?.prevItem);
 
 // disqualifying evidence (extension, §11): Life Orb's `[from] item: Life Orb` recoil is unconditional
 // on every hit except under Magic Guard/some Sheer Force interactions -- both rare, and abilities are
