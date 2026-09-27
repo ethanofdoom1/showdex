@@ -27,6 +27,12 @@ interface PendingMove {
   crit?: boolean;
 
   /**
+   * Whether Quick Claw, Custap Berry or Quick Draw put this move first in its priority bracket, so
+   * its place in the turn order says nothing about Speed.
+   */
+  orderForced?: boolean;
+
+  /**
    * Targets whose NEXT hit of this move crit -- Showdown logs `-crit` immediately before that hit's
    * own `-damage` line, so a multi-hit move that crits on only some of its hits is knowable here
    * (and nowhere else).
@@ -360,6 +366,12 @@ const processChunk = (
     const pendingMoves = new Map<string, PendingMove>();
     const moveOrder: PendingMove[] = [];
     const pendingDamageEvents = new Map<string, PendingDamageEvent>();
+    const orderForcedIds = new Set<string>();
+    const instructedIds = new Set<string>();
+
+    // the target of a Future Sight/Doom Desire that just came due: its hit is logged like a move's,
+    // but with no `move` line of its own, so it would land on whichever move came last
+    let delayedHitTargetId: string = null;
 
     const flushPendingDamageEvents = () => {
       pendingDamageEvents.forEach((pendingEvent) => {
@@ -443,7 +455,9 @@ const processChunk = (
           defenderStint: slowerMove.attackerStint,
           speedOrderSuppressed: state.trickRoomActive
             || tailwindState.has(fasterMove.attackerKey)
-            || tailwindState.has(slowerMove.attackerKey),
+            || tailwindState.has(slowerMove.attackerKey)
+            || !!fasterMove.orderForced
+            || !!slowerMove.orderForced,
           attackerBoosts: cloneBoosts(fasterMove.boosts),
           defenderBoosts: cloneBoosts(slowerMove.boosts),
           attackerStatus: fasterMove.status,
@@ -473,11 +487,22 @@ const processChunk = (
 
         const moveId = formatId(moveName);
         const repeatEntry = moveRepeatState.get(attacker.id);
+        const from = parts.find((part) => part.startsWith('[from]'))?.replace(/^\[from\]\s*/, '');
+
+        // a move the sim ran outside this mon's own slot in the turn order -- Dancer, Magic Bounce,
+        // Magic Coat, or one called by Metronome/Sleep Talk/... (`[from] lockedmove` is the mon's own
+        // Outrage-style turn). Instruct strips its own `[from]`, so its -singleturn is the tell.
+        const outOfOrder = (!!from && effectId(from) !== 'lockedmove') || instructedIds.delete(attacker.id);
+
+        delayedHitTargetId = null;
 
         if (moveId === 'defensecurl') {
           defenseCurlState.add(attacker.id);
         }
 
+        // re-inserted rather than updated in place, so a mon's second move this turn (a Dancer copy)
+        // is the LAST entry -- the -damage/-crit/effectiveness handlers attribute to the last entry
+        pendingMoves.delete(attacker.id);
         pendingMoves.set(attacker.id, {
           turn: turnNumber,
           stepIndex,
@@ -493,8 +518,11 @@ const processChunk = (
           moveRepeatCount: repeatEntry?.moveId === moveId ? repeatEntry.count : 0,
           defenseCurled: defenseCurlState.has(attacker.id),
           attackerStint: (attacker.slot ? activeSlotStintState.get(attacker.slot) : null) || activeStintState.get(attacker.id) || 0,
+          orderForced: orderForcedIds.has(attacker.id),
         });
-        moveOrder.push(pendingMoves.get(attacker.id));
+        if (!outOfOrder) {
+          moveOrder.push(pendingMoves.get(attacker.id));
+        }
 
         return;
       }
@@ -646,6 +674,32 @@ const processChunk = (
             terastallized: true,
           });
         }
+
+        return;
+      }
+
+      if (type === '-singleturn' && effectId(parts[3]) === 'instruct') {
+        const target = parsePokemonToken(parts[2]);
+
+        if (target.id) {
+          instructedIds.add(target.id);
+        }
+
+        return;
+      }
+
+      if (type === '-activate' && ['quickclaw', 'custapberry', 'quickdraw'].includes(effectId(parts[3]))) {
+        const pokemon = parsePokemonToken(parts[2]);
+
+        if (pokemon.id) {
+          orderForcedIds.add(pokemon.id);
+        }
+
+        return;
+      }
+
+      if (type === '-end' && ['futuresight', 'doomdesire'].includes(effectId(parts[3]))) {
+        delayedHitTargetId = parsePokemonToken(parts[2]).id || null;
 
         return;
       }
@@ -849,6 +903,11 @@ const processChunk = (
         return;
       }
 
+      if (['-crit', '-supereffective', '-resisted'].includes(type) && delayedHitTargetId
+        && parsePokemonToken(parts[2]).id === delayedHitTargetId) {
+        return;
+      }
+
       if (type === '-crit') {
         const target = parsePokemonToken(parts[2]);
         const lastMove = [...pendingMoves.values()].at(-1);
@@ -978,6 +1037,17 @@ const processChunk = (
           if (recoilDamageKey) {
             pendingDamageEvents.get(recoilDamageKey).recoilObserved = true;
           }
+        }
+
+        ignoredEventCount++;
+        return;
+      }
+
+      if (defender.id && defender.id === delayedHitTargetId) {
+        delayedHitTargetId = null;
+
+        if (typeof hp.hp === 'number') {
+          hpState.set(defender.id, hp.hp);
         }
 
         ignoredEventCount++;

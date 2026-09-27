@@ -103,6 +103,93 @@ describe('parseHackmonsInferenceEvents()', () => {
     ]);
   });
 
+  it('keeps moves run outside their own turn slot out of the speed order', () => {
+    const head = ['|switch|p1a: Vaporeon|Vaporeon, L50|100/100', '|switch|p2a: Mew|Mew, L50|100/100', '|turn|1'];
+    const speedPairs = (lines: string[]) => parseHackmonsInferenceEvents([...head, ...lines], `order-${lines.length}`)
+      .events
+      .filter((event) => event.eventType === 'speed')
+      .map((event) => [event.attackerName, event.defenderName, !!event.speedOrderSuppressed]);
+
+    // Magic Bounce: Mew moved first; the reflected Stealth Rock is not a second Mew turn
+    expect(speedPairs([
+      '|move|p2a: Mew|Body Slam|p1a: Vaporeon',
+      '|-damage|p1a: Vaporeon|80/100',
+      '|move|p1a: Vaporeon|Stealth Rock|p2a: Mew',
+      '|move|p2a: Mew|Stealth Rock|p1a: Vaporeon|[from] ability: Magic Bounce',
+    ])).toEqual([['Mew', 'Vaporeon', false]]);
+
+    // Instruct strips its own [from]; the -singleturn before the instructed move is the tell
+    expect(speedPairs([
+      '|move|p1a: Vaporeon|Instruct|p2a: Mew',
+      '|-singleturn|p2a: Mew|move: Instruct|[of] p1a: Vaporeon',
+      '|move|p2a: Mew|Body Slam|p1a: Vaporeon',
+      '|-damage|p1a: Vaporeon|80/100',
+    ])).toEqual([]);
+
+    // Outrage's continuation is still the mon's own turn
+    expect(speedPairs([
+      '|move|p2a: Mew|Outrage|p1a: Vaporeon|[from] lockedmove',
+      '|-damage|p1a: Vaporeon|80/100',
+      '|move|p1a: Vaporeon|Scald|p2a: Mew',
+      '|-damage|p2a: Mew|80/100',
+    ])).toEqual([['Mew', 'Vaporeon', false]]);
+
+    // Quick Claw put Vaporeon first regardless of Speed
+    expect(speedPairs([
+      '|-activate|p1a: Vaporeon|item: Quick Claw',
+      '|move|p1a: Vaporeon|Scald|p2a: Mew',
+      '|-damage|p2a: Mew|80/100',
+      '|move|p2a: Mew|Body Slam|p1a: Vaporeon',
+      '|-damage|p1a: Vaporeon|80/100',
+    ])).toEqual([['Vaporeon', 'Mew', true]]);
+  });
+
+  it('attributes a Dancer copy\'s damage to the dancer, not the last new mover', () => {
+    const { events } = parseHackmonsInferenceEvents([
+      '|switch|p1a: Oricorio|Oricorio, L50|100/100',
+      '|switch|p2a: Volcarona|Volcarona, L50|100/100',
+      '|turn|1',
+      '|move|p1a: Oricorio|Roost|p1a: Oricorio',
+      '|move|p2a: Volcarona|Fiery Dance|p1a: Oricorio',
+      '|-damage|p1a: Oricorio|70/100',
+      '|move|p1a: Oricorio|Fiery Dance|p2a: Volcarona|[from] ability: Dancer',
+      '|-damage|p2a: Volcarona|80/100',
+    ], 'dancer');
+
+    expect(events.filter((event) => event.eventType !== 'speed').map((event) => [event.attackerName, event.defenderName])).toEqual([
+      ['Volcarona', 'Oricorio'],
+      ['Oricorio', 'Volcarona'],
+    ]);
+  });
+
+  it('drops a Future Sight hit instead of merging it into the last move', () => {
+    const { events, ignoredEventCount } = parseHackmonsInferenceEvents([
+      '|switch|p1a: Vaporeon|Vaporeon, L50|100/100',
+      '|switch|p2a: Mew|Mew, L50|100/100',
+      '|turn|3',
+      '|move|p2a: Mew|Swords Dance|p2a: Mew',
+      '|-boost|p2a: Mew|atk|2',
+      '|move|p1a: Vaporeon|Scald|p2a: Mew',
+      '|-damage|p2a: Mew|80/100',
+      '|',
+      '|-end|p2a: Mew|move: Future Sight',
+      '|-resisted|p2a: Mew',
+      '|-damage|p2a: Mew|50/100',
+      '|upkeep',
+      '|turn|4',
+      '|move|p1a: Vaporeon|Scald|p2a: Mew',
+      '|-damage|p2a: Mew|30/100',
+    ], 'future-sight');
+
+    const damageEvents = events.filter((event) => event.eventType !== 'speed');
+
+    expect(ignoredEventCount).toBe(1);
+    expect(damageEvents.map((event) => [event.hitDamages, event.effectiveness, event.startHp])).toEqual([
+      [[20], 'neutral', 100],
+      [[20], 'neutral', 50],
+    ]);
+  });
+
   it('attributes a multi-hit move\'s crit to the hit it actually landed on', () => {
     const { events } = parseHackmonsInferenceEvents([
       '|switch|p1a: Weavile|Weavile, L50|100/100',
