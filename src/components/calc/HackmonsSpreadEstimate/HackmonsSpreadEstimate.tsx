@@ -38,6 +38,7 @@ const serializeMatches = (
   outlier: match.outlier,
   explainedBy: match.explainedBy,
   ko: match.ko,
+  censored: match.censored,
 })));
 
 const serializeModifiers = (
@@ -339,6 +340,7 @@ export const HackmonsSpreadEstimate = ({
                   {typeof match.medianDamage === 'number' ? ` | median ${match.medianDamage}%` : ''}
                   {typeof match.distance === 'number' ? ` | Δ${match.distance}` : ''}
                   {match.ko ? ' | KO (obs truncated)' : ''}
+                  {match.censored && !match.ko ? ' | held at 1 HP (obs truncated)' : ''}
                   {match.explainedBy ? ` | explained by ${match.explainedBy}` : ''}
                   {match.outlier ? ` | ${match.outlier.toUpperCase()}` : ''}
                   {match.error ? ` | ERROR: ${match.error}` : ''}

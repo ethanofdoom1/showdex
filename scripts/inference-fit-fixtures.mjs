@@ -195,6 +195,36 @@ const forwardRolls = (spread, target) => {
   return Array.isArray(damage) ? damage.filter((v) => typeof v === 'number') : [damage];
 };
 
+// FORWARD ORACLE for any move at an explicit base power (independent of the search): the rolls the
+// given Mew spread produces. The calc re-doubles Payback/Bolt Beak from Speed, so a disagreeing run is
+// rescaled to land on the power actually asked for (and asserted to).
+const forwardMoveRolls = (spread, moveName, basePower, target) => {
+  const state = createState('forward-move');
+  const mew = { ...state.p2.pokemon[0], ...spread };
+  const defender = state.p1.pokemon.find((p) => p.speciesForme === target);
+  const field = createSmogonField(state.format, state.gameType, state.field, state.p2, state.p1, [state.p1, state.p2]);
+  const attacker = createSmogonPokemon(state.format, state.gameType, mew, moveName, defender);
+  const smogonDefender = createSmogonPokemon(state.format, state.gameType, defender, null, mew);
+  const run = (bp) => {
+    const withBp = { ...mew, moveOverrides: { [moveName]: { basePower: bp } } };
+    const [move] = createSmogonMove(state.format, withBp, moveName, defender, field) || [];
+
+    return calculate(Dex.forGen(9), attacker, smogonDefender, move, field, { hitBasePowers: null, excludeHazardsDamage: true, excludeEotDamage: true });
+  };
+  let result = run(basePower);
+  const calcBp = result?.rawDesc?.moveBP;
+
+  if (calcBp && calcBp !== basePower) {
+    result = run((basePower * basePower) / calcBp);
+  }
+
+  if ((result?.rawDesc?.moveBP || basePower) !== basePower) {
+    throw new Error('forward oracle missed ' + moveName + ' BP ' + basePower);
+  }
+
+  return result.damage.filter((v) => typeof v === 'number');
+};
+
 const results = [];
 let FAILED = false;
 
@@ -632,31 +662,7 @@ if (MODE === 'forward') {
   // modifier, and an unmodelled one is off by exactly x2.
   const mewSpread = { nature: 'Adamant', ivs: fullIvs, evs: stats(0, 252, 0, 0, 4, 252) };
   const forward = (moveName, basePower, target = 'Vaporeon') => {
-    const state = createState('forward-power');
-    const mew = { ...state.p2.pokemon[0], ...mewSpread };
-    const defender = state.p1.pokemon.find((p) => p.speciesForme === target);
-    const field = createSmogonField(state.format, state.gameType, state.field, state.p2, state.p1, [state.p1, state.p2]);
-    const attacker = createSmogonPokemon(state.format, state.gameType, mew, moveName, defender);
-    const smogonDefender = createSmogonPokemon(state.format, state.gameType, defender, null, mew);
-    const run = (bp) => {
-      const withBp = { ...mew, moveOverrides: { [moveName]: { basePower: bp } } };
-      const [move] = createSmogonMove(state.format, withBp, moveName, defender, field) || [];
-
-      return calculate(Dex.forGen(9), attacker, smogonDefender, move, field, { hitBasePowers: null, excludeHazardsDamage: true, excludeEotDamage: true });
-    };
-    let result = run(basePower);
-    const calcBp = result?.rawDesc?.moveBP;
-
-    // the calc re-doubles Payback/Bolt Beak from Speed; land it on the power actually asked for
-    if (calcBp && calcBp !== basePower) {
-      result = run((basePower * basePower) / calcBp);
-    }
-
-    if ((result?.rawDesc?.moveBP || basePower) !== basePower) {
-      throw new Error('forward oracle missed ' + moveName + ' BP ' + basePower);
-    }
-
-    const rolls = result.damage.filter((v) => typeof v === 'number');
+    const rolls = forwardMoveRolls(mewSpread, moveName, basePower, target);
 
     return rolls[Math.floor(rolls.length / 2)];
   };
@@ -690,6 +696,46 @@ if (MODE === 'forward') {
   scenario('bolt-beak-plain', 'Bolt Beak', 85, false, 'super');
   // control: an undoubled Avalanche is what the calc already modelled, before and after
   scenario('control-avalanche-plain', 'Avalanche', 60, false, 'resisted');
+
+  FAILED = results.some((result) => !result.ok);
+} else if (MODE === 'survivals') {
+  // Focus Sash/Sturdy/Endure (and False Swipe) cap a hit at the defender's HP - 1: the real roll was
+  // AT LEAST the observation, exactly like a KO. So a capped hit (251 -> 1 HP, observed 250) must score
+  // exactly like a KO with the SAME observation (250 -> 0 HP) -- identical estimate, no outlier.
+  const spread = { nature: 'Adamant', ivs: fullIvs, evs: stats(0, 252, 0, 0, 4, 252) };
+  const edgeRolls = forwardMoveRolls(spread, 'Double-Edge', 120, 'Deoxys-Attack');
+  const anchorRolls = forwardMoveRolls(spread, 'Body Slam', 85, 'Vaporeon');
+  const anchor = damageEvent({ id: 'a0', turn: 1, moveName: 'Body Slam', damage: anchorRolls[Math.floor(anchorRolls.length / 2)] });
+  const capState = (suffix) => {
+    const state = createState(suffix);
+
+    return { ...state, p2: { ...state.p2, pokemon: state.p2.pokemon.map((mon) => ({ ...mon, ability: '', dirtyAbility: null, item: '', dirtyItem: null })) } };
+  };
+  const estimateOf = (name, event) => {
+    const estimate = (Object.values(inferHackmonsSpread(capState(name), [anchor, event], 0))[0] || {}).estimate || {};
+
+    return {
+      spread: JSON.stringify([estimate.nature, estimate.ivs, estimate.evs]),
+      outliers: (estimate.matches || []).filter((m) => !!m.outlier).map((m) => m.moveName + ' ' + m.observedDamage + ' ' + JSON.stringify(m.rollRange)),
+    };
+  };
+  const capped = estimateOf('capped', {
+    ...damageEvent({ id: 'c1', turn: 2, moveName: 'Double-Edge', damage: 250, target: 'Deoxys-Attack' }),
+    startHp: 251, endHp: 1, survivalCapped: true,
+  });
+  const ko = estimateOf('ko', {
+    ...damageEvent({ id: 'k1', turn: 2, moveName: 'Double-Edge', damage: 250, target: 'Deoxys-Attack' }),
+    startHp: 250, endHp: 0,
+  });
+
+  results.push({
+    name: 'sash-capped-equals-ko',
+    edgeMinRoll: Math.min(...edgeRolls),
+    capped,
+    ko,
+    // the oracle must actually overkill (else the cap never engaged), and the two must agree
+    ok: Math.min(...edgeRolls) > 250 && capped.spread === ko.spread && !capped.outliers.length,
+  });
 
   FAILED = results.some((result) => !result.ok);
 } else if (MODE === 'sweep') {

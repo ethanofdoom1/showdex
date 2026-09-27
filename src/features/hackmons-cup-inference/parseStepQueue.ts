@@ -67,6 +67,7 @@ interface PendingDamageEvent {
   totalDamage: number;
   hitDamages: number[];
   powerDoubled?: boolean;
+  survivalCapped?: boolean;
   critHits: boolean[];
   recoilObserved?: boolean;
   effectiveness?: HackmonsDamageEffectiveness;
@@ -403,6 +404,10 @@ const processChunk = (
     const switchedInIds = new Set<string>();
     const pursuitTargetIds = new Set<string>();
 
+    // mons whose NEXT move hit is held at 1 HP -- Focus Sash/Sturdy/Endure/Focus Band are logged before
+    // the -damage they cap
+    const survivalCapIds = new Set<string>();
+
     // the target of a Future Sight/Doom Desire that just came due: its hit is logged like a move's,
     // but with no `move` line of its own, so it would land on whichever move came last
     let delayedHitTargetId: string = null;
@@ -441,6 +446,7 @@ const processChunk = (
           attackerStint: pendingMove?.attackerStint,
           defenderStint: pendingEvent.defenderStint,
           powerDoubled: pendingEvent.powerDoubled,
+          survivalCapped: pendingEvent.survivalCapped || undefined,
           hitDamages: [...pendingEvent.hitDamages],
           recoilObserved: !!pendingEvent.recoilObserved,
           attackerBoosts: cloneBoosts(pendingEvent.attackerBoosts),
@@ -738,6 +744,16 @@ const processChunk = (
         return;
       }
 
+      if (type === '-activate' && ['endure', 'focusband'].includes(effectId(parts[3]))) {
+        const pokemon = parsePokemonToken(parts[2]);
+
+        if (pokemon.id) {
+          survivalCapIds.add(pokemon.id);
+        }
+
+        return;
+      }
+
       if (type === '-activate' && effectId(parts[3]) === 'pursuit') {
         const pokemon = parsePokemonToken(parts[2]);
 
@@ -851,6 +867,10 @@ const processChunk = (
       if (type === '-ability') {
         const pokemon = parsePokemonToken(parts[2]);
 
+        if (effectId(parts[3]) === 'sturdy' && pokemon.id) {
+          survivalCapIds.add(pokemon.id);
+        }
+
         if (pokemon.id) {
           pokemonState.set(pokemon.id, {
             ...clonePokemonSnapshot(pokemonState.get(pokemon.id)),
@@ -869,6 +889,10 @@ const processChunk = (
       if (type === '-item' || type === '-enditem') {
         const pokemon = parsePokemonToken(parts[2]);
         const item = effectId(parts[3]);
+
+        if (type === '-enditem' && item === 'focussash' && pokemon.id) {
+          survivalCapIds.add(pokemon.id);
+        }
 
         if (pokemon.id && item) {
           pokemonState.set(pokemon.id, {
@@ -1174,6 +1198,8 @@ const processChunk = (
       // Set.delete() reports whether the `-crit` line that precedes this hit's `-damage` was for
       // this defender, and consumes it so the NEXT hit starts uncrit again
       const hitCrit = !!pendingMove.pendingCritTargets?.delete(defender.id);
+      const survivalCapped = survivalCapIds.delete(defender.id)
+        || (['falseswipe', 'holdback'].includes(formatId(pendingMove.moveName)) && hp.hp === 1);
 
       if (pendingDamage) {
         pendingDamage.endHp = hp.hp;
@@ -1181,6 +1207,7 @@ const processChunk = (
         pendingDamage.totalDamage += damage;
         pendingDamage.hitDamages.push(damage);
         pendingDamage.critHits.push(hitCrit);
+        pendingDamage.survivalCapped = pendingDamage.survivalCapped || survivalCapped;
       } else {
         pendingDamageEvents.set(damageKey, {
           turn: turnNumber,
@@ -1215,6 +1242,7 @@ const processChunk = (
           defenderSnapshot: getPokemonSnapshot(pokemonState, defender.id),
           rawLine: step,
           defenderStint: (defender.slot ? activeSlotStintState.get(defender.slot) : null) || activeStintState.get(defender.id) || 0,
+          survivalCapped,
           powerDoubled: turnHistoryPowerDoubled(formatId(pendingMove.moveName), {
             hitByTarget: directHits.has(`${pendingMove.attackerId}|${defender.id}`),
             targetHurt: defenderWasHurt,

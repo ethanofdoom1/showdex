@@ -1185,6 +1185,10 @@ const getMoveInfluence = (
   };
 };
 
+const eventDamageCensored = (
+  event: HackmonsInferenceEvent,
+): boolean => event.endHp === 0 || !!event.survivalCapped;
+
 const evaluateCandidateEvent = (
   state: CalcdexBattleState,
   event: HackmonsInferenceEvent,
@@ -1496,8 +1500,9 @@ const evaluateCandidateEvent = (
 
   // a KO hit's observed damage is truncated at the defender's remaining HP -- the real roll was AT
   // LEAST the observation -- so score it one-sided (any candidate whose max roll covers the observed
-  // HP loss fits perfectly) instead of dragging the search toward matching the truncated value exactly
-  const ko = event.endHp === 0;
+  // HP loss fits perfectly) instead of dragging the search toward matching the truncated value exactly.
+  // A hit held at 1 HP (Focus Sash, Sturdy, Endure, False Swipe) is truncated the same way.
+  const ko = eventDamageCensored(event);
 
   // feasibility distance for scoreCandidate(): 0 whenever this spread can actually produce the
   // observation (in-range), and only positive when it's genuinely unreachable by this spread. This is
@@ -1528,7 +1533,8 @@ const evaluateCandidateEvent = (
     rangeDistance,
     maxHp: event.maxHp,
     crit: !!event.crit,
-    ko,
+    ko: event.endHp === 0,
+    censored: ko,
     attackerBoosts: cloneBoostSnapshot(event.attackerBoosts),
     defenderBoosts: cloneBoostSnapshot(event.defenderBoosts),
     attackerStatus: event.attackerStatus || '',
@@ -2173,7 +2179,7 @@ const isInRangeMatch = (
     && !!match?.rollRange
     // a KO's observed damage is overkill-truncated at the defender's remaining HP, so any roll range
     // whose max covers the observation is a perfect fit -- only the upper bound applies
-    && (match.ko || match.observedDamage >= match.rollRange[0])
+    && (match.censored || match.observedDamage >= match.rollRange[0])
     && match.observedDamage <= match.rollRange[1]
 );
 
@@ -2194,7 +2200,7 @@ const outlierDirection = (
 
   // a KO's observed damage is truncated at the defender's remaining HP, so landing under the modeled
   // min is expected (overkill), not evidence of a damage-reducing modifier
-  if (!match.ko && match.observedDamage < match.rollRange[0]) {
+  if (!match.censored && match.observedDamage < match.rollRange[0]) {
     return 'too-low';
   }
 
@@ -2294,7 +2300,7 @@ const evaluateExtremalFeasibility = (
     high: highMatch,
     low: lowMatch,
     highInfeasible: outlierDirection(highMatch) === 'too-high',
-    lowInfeasible: !lowMatch?.ko && outlierDirection(lowMatch) === 'too-low',
+    lowInfeasible: !lowMatch?.censored && outlierDirection(lowMatch) === 'too-low',
   };
 };
 
@@ -3415,7 +3421,7 @@ const damageEventGroupKey = (
 ): string => JSON.stringify({
   context: context.signature,
   observed: normalizeObservedDamage(state, event.damage || 0, event.maxHp),
-  ko: event.endHp === 0,
+  ko: eventDamageCensored(event),
   startHp: event.maxHp === 100 ? event.startHp : undefined,
 });
 

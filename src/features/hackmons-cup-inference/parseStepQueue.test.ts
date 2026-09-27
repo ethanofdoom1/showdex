@@ -229,6 +229,34 @@ describe('parseHackmonsInferenceEvents()', () => {
     ], 'pursuit')).toEqual([['Pursuit', true]]);
   });
 
+  it('marks a hit held at 1 HP as a lower bound', () => {
+    const capped = (lines: string[], name: string) => parseHackmonsInferenceEvents([
+      '|switch|p1a: Weavile|Weavile, L50|100/100',
+      '|switch|p2a: Mew|Mew, L50|100/100',
+      '|turn|1',
+      ...lines,
+    ], name).events
+      .filter((event) => event.eventType !== 'speed')
+      .map((event) => [event.moveName, event.endHp, !!event.survivalCapped]);
+
+    expect(capped([
+      '|move|p2a: Mew|Close Combat|p1a: Weavile',
+      '|-enditem|p1a: Weavile|Focus Sash',
+      '|-damage|p1a: Weavile|1/100',
+      '|move|p1a: Weavile|Knock Off|p2a: Mew',
+      '|-damage|p2a: Mew|1/100',
+    ], 'sash')).toEqual([['Close Combat', 1, true], ['Knock Off', 1, false]]);
+
+    expect(capped([
+      '|move|p2a: Mew|Close Combat|p1a: Weavile',
+      '|-ability|p1a: Weavile|Sturdy',
+      '|-damage|p1a: Weavile|1/100',
+      '|turn|2',
+      '|move|p1a: Weavile|False Swipe|p2a: Mew',
+      '|-damage|p2a: Mew|1/100',
+    ], 'sturdy-false-swipe')).toEqual([['Close Combat', 1, true], ['False Swipe', 1, true]]);
+  });
+
   it('attributes a multi-hit move\'s crit to the hit it actually landed on', () => {
     const { events } = parseHackmonsInferenceEvents([
       '|switch|p1a: Weavile|Weavile, L50|100/100',

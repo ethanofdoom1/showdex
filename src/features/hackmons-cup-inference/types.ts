@@ -261,6 +261,12 @@ export interface HackmonsInferenceEvent {
   powerDoubled?: boolean;
 
   /**
+   * Whether this hit was held at 1 HP (Focus Sash, Sturdy, Endure, Focus Band, or False Swipe/Hold
+   * Back), so the observed damage is only a lower bound on the real roll -- just like a KO.
+   */
+  survivalCapped?: boolean;
+
+  /**
    * Number of consecutive prior turns the attacker has successfully landed this exact move. Feeds
    * *Fury Cutter* & *Rollout*'s variable base power, which doubles with each consecutive successful use.
    *
@@ -352,6 +358,12 @@ export interface HackmonsDamageMatch {
    * @since 1.3.0
    */
   ko?: boolean;
+
+  /**
+   * Whether the observation is only a lower bound on the real roll: a KO (see `ko`), or a hit held at
+   * 1 HP by Focus Sash/Sturdy/Endure/Focus Band/False Swipe (see the event's `survivalCapped`).
+   */
+  censored?: boolean;
 }
 
 export interface HackmonsExtremalFeasibility {
