@@ -28,6 +28,57 @@ describe('parseHackmonsInferenceEvents()', () => {
     });
   });
 
+  it('drops fixed-damage hits from inference but still tracks their HP and Rage Fist hits', () => {
+    const { events, ignoredEventCount } = parseHackmonsInferenceEvents([
+      '|switch|p1a: Annihilape|Annihilape, L50|100/100',
+      '|switch|p2a: Gengar|Gengar, L50|100/100',
+      '|turn|1',
+      '|move|p2a: Gengar|Seismic Toss|p1a: Annihilape',
+      '|-damage|p1a: Annihilape|70/100',
+      '|move|p1a: Annihilape|Super Fang|p2a: Gengar',
+      '|-damage|p2a: Gengar|50/100',
+      '|turn|2',
+      '|move|p2a: Gengar|Shadow Ball|p1a: Annihilape',
+      '|-supereffective|p1a: Annihilape',
+      '|-damage|p1a: Annihilape|40/100',
+      '|move|p1a: Annihilape|Rage Fist|p2a: Gengar',
+      '|-supereffective|p2a: Gengar',
+      '|-damage|p2a: Gengar|10/100',
+    ], 'fixed-damage');
+
+    const damageEvents = events.filter((event) => event.eventType !== 'speed');
+
+    expect(ignoredEventCount).toBe(2);
+    expect(damageEvents.map((event) => event.moveName)).toEqual(['Shadow Ball', 'Rage Fist']);
+    expect(damageEvents[0]).toMatchObject({ startHp: 70, endHp: 40, effectiveness: 'super' });
+    expect(damageEvents[1]).toMatchObject({ startHp: 50, endHp: 10, attackerHitCounter: 2 });
+  });
+
+  it('records no effectiveness for typeless Struggle, and neutral for an unmarked typed hit', () => {
+    const { events } = parseHackmonsInferenceEvents([
+      '|switch|p1a: Skarmory|Skarmory, L50|100/100',
+      '|switch|p2a: Blissey|Blissey, L50|100/100',
+      '|turn|1',
+      '|move|p2a: Blissey|Struggle|p1a: Skarmory',
+      '|-damage|p1a: Skarmory|90/100',
+      '|turn|2',
+      '|move|p2a: Blissey|Body Slam|p1a: Skarmory',
+      '|-resisted|p1a: Skarmory',
+      '|-damage|p1a: Skarmory|85/100',
+      '|turn|3',
+      '|move|p2a: Blissey|Flamethrower|p1a: Skarmory',
+      '|-damage|p1a: Skarmory|70/100',
+    ], 'struggle-typeless');
+
+    const damageEvents = events.filter((event) => event.eventType !== 'speed');
+
+    expect(damageEvents.map((event) => [event.moveName, event.effectiveness])).toEqual([
+      ['Struggle', undefined],
+      ['Body Slam', 'resisted'],
+      ['Flamethrower', 'neutral'],
+    ]);
+  });
+
   it('attributes a multi-hit move\'s crit to the hit it actually landed on', () => {
     const { events } = parseHackmonsInferenceEvents([
       '|switch|p1a: Weavile|Weavile, L50|100/100',

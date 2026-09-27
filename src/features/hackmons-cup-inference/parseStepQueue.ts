@@ -78,6 +78,24 @@ interface PendingDamageEvent {
   defenderStint?: number;
 }
 
+// moves whose damage the sim fixes by level, HP or damage taken: getDamage() returns for `damage`,
+// `damageCallback` and `ohko` BEFORE modifyDamage(), the only place -supereffective/-resisted are
+// emitted. A hit from one carries no spread information, and its missing effectiveness line would
+// read as "neutral" -- which, against a resisting defender, looks exactly like a type-change ability.
+// Derived from pokemon-showdown's data/moves.ts (+ gen mods); Bide sets `damage` from its condition.
+const FormulaBypassingMoveIds = new Set([
+  'bide', 'comeuppance', 'counter', 'dragonrage', 'endeavor', 'finalgambit', 'fissure',
+  'guardianofalola', 'guillotine', 'horndrill', 'metalburst', 'mirrorcoat', 'naturesmadness',
+  'nightshade', 'psywave', 'ruination', 'seismictoss', 'sheercold', 'sonicboom', 'superfang',
+]);
+
+// a hit with no -supereffective/-resisted line was neutral -- except Struggle, which is typeless from
+// gen 4 on and so never logs one; reading it as neutral would contradict the dex's Normal type
+// against Rock/Steel/Ghost and look like a type-change ability
+const unmarkedEffectiveness = (
+  moveName: string,
+): HackmonsDamageEffectiveness => (formatId(moveName) === 'struggle' ? undefined : 'neutral');
+
 const cloneBoosts = (
   boosts?: Partial<Showdown.StatsTableNoHp>,
 ): Showdown.StatsTableNoHp => ({
@@ -368,7 +386,7 @@ const processChunk = (
           critHits: [...pendingEvent.critHits],
           multiHit: pendingMove?.multiHit,
           hits: pendingMove?.hits,
-          effectiveness: pendingEvent.effectiveness || pendingMove?.effectiveness || 'neutral',
+          effectiveness: pendingEvent.effectiveness || pendingMove?.effectiveness || unmarkedEffectiveness(pendingEvent.moveName),
           attackerDynamaxed: !!pendingMove?.dynamaxed,
           attackerHitCounter: pendingMove?.hitCounter,
           attackerMoveRepeatCount: pendingMove?.moveRepeatCount,
@@ -981,6 +999,13 @@ const processChunk = (
         count: (pendingMove.moveRepeatCount || 0) + 1,
       });
 
+      if (FormulaBypassingMoveIds.has(formatId(pendingMove.moveName))) {
+        hpState.set(defender.id, hp.hp);
+        maxHpState.set(defender.id, maxHp);
+        ignoredEventCount++;
+        return;
+      }
+
       const damageKey = [
         pendingMove.attackerId,
         defender.id,
@@ -1018,7 +1043,7 @@ const processChunk = (
           endHp: hp.hp,
           maxHp,
           totalDamage: damage,
-          effectiveness: pendingMove.effectiveness || 'neutral',
+          effectiveness: pendingMove.effectiveness || unmarkedEffectiveness(pendingMove.moveName),
           attackerBoosts: cloneBoosts(getBoosts(boostState, pendingMove.attackerId)),
           defenderBoosts: cloneBoosts(getBoosts(boostState, defender.id)),
           attackerStatus: getStatus(statusState, pendingMove.attackerId),
