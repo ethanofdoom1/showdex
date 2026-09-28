@@ -18,10 +18,24 @@ export const createEnvParser = (
   dict: EnvDict = process.env,
   debugKey = 'DEBUG',
 ) => {
+  // constantCase() is regex-heavy and hot paths (e.g., the Hackmons spread search, via
+  // calcPokemonSpreadStats()) look the same few keys up thousands of times, so memoize the conversion
+  const constantKeys = new Map<string, string>();
+  const toConstantKey = (key: string): string => {
+    let constantKey = constantKeys.get(key);
+
+    if (constantKey === undefined) {
+      constantKey = constantCase(key);
+      constantKeys.set(key, constantKey);
+    }
+
+    return constantKey;
+  };
+
   const env = <T extends string = string>(
     key: string,
     defaultValue = '',
-  ): T => (dict?.[constantCase(key)] || defaultValue) as T;
+  ): T => (dict?.[toConstantKey(key)] || defaultValue) as T;
 
   env.dict = (shallow?: boolean) => (shallow ? { ...dict } : dict);
 
@@ -43,7 +57,7 @@ export const createEnvParser = (
   // env utilities
   env.exists = (
     key: string,
-  ): boolean => constantCase(key) in dict;
+  ): boolean => toConstantKey(key) in dict;
 
   env.debug = (
     debugSubKey: string,

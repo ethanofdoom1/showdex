@@ -60,15 +60,22 @@ const CacheVersion = 'likelihood-fit-v26';
 const InferenceCache = new Map<string, HackmonsInferenceState>();
 const SpeedDependentMoves = new Set(['electroball', 'gyroball']);
 
-// perf audit remedy #4: rolls survive across syncs (unlike `rollCache` itself, which is local to one
-// inferHackmonsSpread() call) since an old event's roll doesn't change just because a new event
-// appended -- keyed per `calcdexId` + `participantSignature` (NOT the event signature, which is the
-// whole point) so a reveal still starts a fresh roll cache instead of reusing rolls computed against a
-// stale non-candidate ability/item, same poisoned-cache hazard `participantSignature` already guards
-// against for `InferenceCache` above
+// perf audit remedy #4: rolls survive across syncs since an old event's roll doesn't change just because
+// a new event appended -- one store per `calcdexId`, each entry keyed by its event's interned context id.
+// That context signature carries every participant's ability/item, so a reveal re-keys (and recomputes)
+// exactly the events it could change, never reusing a roll computed against a stale ability/item
 interface CachedDamageRolls {
   rolls: number[];
   rawRolls?: number[];
+
+  // what scoreCandidate() needs from each event that shares these rolls, keyed by eventObservationKey():
+  // pure functions of the rolls and the observation, so they live (and are evicted) with the rolls
+  terms?: Map<string, CandidateEventTerm>;
+}
+
+interface CandidateEventTerm {
+  logLikelihood: number;
+  rangeDistance: number;
 }
 
 type RollCache = Map<string, CachedDamageRolls>;
@@ -786,19 +793,27 @@ const applyEventFaintCount = (
 
 // screens are a flat damage multiplier and Tailwind feeds the speed-based moves, so a past event has
 // to be calculated against the side conditions that were up when it happened, not the current ones
+// both participants of a past event were on the field when it happened, so its calc sees the side as
+// createSmogonField() treats an active mon's: hazards already spent (their chip is in the event's own
+// start HP). Only Tera Shell reads them in the calc, and otherwise they'd follow whichever mon is
+// selected NOW -- which has nothing to do with the event.
 const applyEventPlayerSide = (
   player: CalcdexBattleState[CalcdexPlayerKey],
   snapshot?: HackmonsInferenceSideSnapshot,
 ): CalcdexBattleState[CalcdexPlayerKey] => (
-  player && snapshot
+  player
     ? {
       ...player,
       side: {
         ...player.side,
-        isReflect: !!snapshot.isReflect,
-        isLightScreen: !!snapshot.isLightScreen,
-        isAuroraVeil: !!snapshot.isAuroraVeil,
-        isTailwind: !!snapshot.isTailwind,
+        ...(snapshot ? {
+          isReflect: !!snapshot.isReflect,
+          isLightScreen: !!snapshot.isLightScreen,
+          isAuroraVeil: !!snapshot.isAuroraVeil,
+          isTailwind: !!snapshot.isTailwind,
+        } : null),
+        spikes: 0,
+        isSR: false,
       },
     }
     : player
@@ -1227,6 +1242,30 @@ const eventDamageCensored = (
   event: HackmonsInferenceEvent,
 ): boolean => event.endHp === 0 || !!event.survivalCapped;
 
+// the damage rolls for an event are a pure function of the candidate's stats that actually feed the calc
+// (everything else -- the non-candidate Pokemon, boosts, status, field, crit, hits -- is fixed for a given
+// event context), so they're cached under this key across the coordinate search and across syncs
+const eventRollKey = (
+  context: DamageEventContext,
+  candidateSpreadStats: Partial<Showdown.StatsTable>,
+  modifierOverride?: ModifierOverride,
+): string => `${context.id}:${context.relation}:${modifierOverride?.id || 'none'}:${context.relevantStats
+  .map((stat) => candidateSpreadStats?.[stat] ?? '')
+  .join(',')}`;
+
+// everything besides the rolls that an event's score depends on (see the tail of evaluateCandidateEvent())
+const eventObservationKey = (
+  state: CalcdexBattleState,
+  event: HackmonsInferenceEvent,
+  candidateSpreadStats: Partial<Showdown.StatsTable>,
+): string => [
+  normalizeObservedDamage(state, event.damage || 0, event.maxHp),
+  event.crit ? 1 : 0,
+  eventDamageCensored(event) ? 1 : 0,
+  // the percent-HP path quantizes the rolls against the candidate's HP from the event's start HP
+  event.maxHp === 100 ? `${event.startHp ?? 0}/${candidateSpreadStats?.hp ?? ''}` : '',
+].join(':');
+
 const evaluateCandidateEvent = (
   state: CalcdexBattleState,
   event: HackmonsInferenceEvent,
@@ -1260,7 +1299,6 @@ const evaluateCandidateEvent = (
     attackerMatch,
     defenderMatch,
     relation,
-    relevantStats,
     eventField,
   } = context;
 
@@ -1280,12 +1318,7 @@ const evaluateCandidateEvent = (
     return emptyMatch('candidate relation failed');
   }
 
-  // the damage rolls for this event are a pure function of the candidate's stats that actually feed
-  // the calc (everything else here -- the non-candidate Pokemon, boosts, status, field, crit, hits --
-  // is fixed for a given event), so cache them across the coordinate search to skip redundant calculate()s
-  const rollKey = `${context.id}:${relation}:${modifierOverride?.id || 'none'}:${relevantStats
-    .map((stat) => candidateSpreadStats?.[stat] ?? '')
-    .join(',')}`;
+  const rollKey = eventRollKey(context, candidateSpreadStats, modifierOverride);
 
   const cachedRolls = rollCache?.get(rollKey);
   let rolls = cachedRolls?.rolls;
@@ -1677,10 +1710,19 @@ interface SpeedEventContext {
 // `hpOverridden` mirrors applyEventHp()'s own guard: when the event carries this side's HP, the
 // live hp/maxhp/dirtyHp never reach the calc, so keeping them here would only make the signature --
 // and with it the roll cache key -- churn on every turn for no modelled difference
+// A past event's calc never sees a participant's LIVE boosts (the event's own stages replace them),
+// its live status once the event carries one, its move list (@smogon/calc never reads it; a Max move's
+// base move is already `context.moveName`), or the dirty ability/item/boost overrides that
+// applyInferencePokemonAssumptions() nulls -- and for the search candidate, the live nature/IVs/EVs
+// that the spread being tried replaces. Hashing any of them only re-keys every past event (and throws
+// away its cached rolls) whenever the live value moves -- a boost, a status, a newly revealed move, a
+// chip click -- for calcs that come out identical.
 const damagePokemonSignature = (
   pokemon?: CalcdexPokemon,
   hpOverridden?: boolean,
   faintCountOverridden?: boolean,
+  statusOverridden?: boolean,
+  spreadOverridden?: boolean,
 ): unknown[] => [
   pokemon?.calcdexId,
   pokemon?.source,
@@ -1698,30 +1740,24 @@ const damagePokemonSignature = (
   pokemon?.teraType,
   pokemon?.dirtyTeraType,
   pokemon?.ability,
-  pokemon?.dirtyAbility,
   pokemon?.abilityToggled,
   pokemon?.item,
-  pokemon?.dirtyItem,
   pokemon?.prevItem,
-  pokemon?.nature,
-  pokemon?.moves,
+  spreadOverridden ? null : pokemon?.nature,
   pokemon?.moveOverrides,
-  pokemon?.spreadStats,
-  pokemon?.ivs,
-  pokemon?.evs,
+  spreadOverridden ? null : pokemon?.spreadStats,
+  spreadOverridden ? null : pokemon?.ivs,
+  spreadOverridden ? null : pokemon?.evs,
   hpOverridden ? null : pokemon?.hp,
   hpOverridden ? null : pokemon?.maxhp,
   hpOverridden ? null : pokemon?.dirtyHp,
-  pokemon?.status,
+  statusOverridden ? null : pokemon?.status,
   pokemon?.dirtyStatus,
   // toxicCounter (and saltcure below it in `volatiles`) only ever feed end-of-turn damage, which
   // ShowdexCalcMods excludes from every calc this file runs -- hashing a counter that ticks every
   // turn but can't move a roll only churns the cache key
   null,
-  pokemon?.boosts,
-  pokemon?.dirtyBoosts,
   pokemon?.boostedStat,
-  pokemon?.dirtyBoostedStat,
   faintCountOverridden ? null : pokemon?.faintCounter,
   faintCountOverridden ? null : pokemon?.dirtyFaintCounter,
   pokemon?.useMax,
@@ -1747,20 +1783,24 @@ const damageContextSignature = (
     return [
       // the screens & Tailwind now come from the event, so only the rest of the side still matters
       // here (Helping Hand, Friend Guard, the pledges, ... -- none of which are snapshotted yet)
-      sideOverridden
-        ? {
-          ...player?.side,
-          isReflect: null,
-          isLightScreen: null,
-          isAuroraVeil: null,
-          isTailwind: null,
-        }
-        : player?.side,
-      player?.selectionIndex,
-      player?.activeIndices,
-      selected?.calcdexId,
-      selected?.ability,
-      selected?.dirtyAbility,
+      {
+        ...(sideOverridden
+          ? {
+            ...player?.side,
+            isReflect: null,
+            isLightScreen: null,
+            isAuroraVeil: null,
+            isTailwind: null,
+          }
+          : player?.side),
+        // applyEventPlayerSide() always resets these for an event calc
+        spikes: null,
+        isSR: null,
+      },
+      // createSmogonField() only reads the live selection for the Doubles-only Ruin toggles
+      ...(state.gameType === 'Doubles'
+        ? [player?.selectionIndex, player?.activeIndices, selected?.calcdexId, selected?.ability, selected?.dirtyAbility]
+        : []),
     ];
   };
 
@@ -1806,12 +1846,16 @@ const damageContextSignature = (
       context.attackerMatch?.pokemon,
       hpOverridden(event.attackerStartHp, event.attackerMaxHp),
       typeof event.attackerFaintCount === 'number',
+      typeof event.attackerStatus === 'string',
+      context.relation === 'attacker',
     ),
     context.defenderMatch?.playerKey,
     damagePokemonSignature(
       context.defenderMatch?.pokemon,
       hpOverridden(event.startHp, event.maxHp),
       typeof event.defenderFaintCount === 'number',
+      typeof event.defenderStatus === 'string',
+      context.relation === 'defender',
     ),
     context.relation,
     context.influence,
@@ -2133,6 +2177,98 @@ interface CandidateScore {
   infeasible: number;
 }
 
+// scoreCandidate()'s per-event term, remembered next to the event's cached rolls: re-scoring a spread on a
+// later sync (or under another pass/hypothesis) then only pays for events it hasn't seen yet
+// a candidate's stats are a pure function of the mon's base-stat inputs and the spread being tried -- and
+// the search asks for the same spreads over and over (passes, centring, every modifier hypothesis). Scoped
+// to the mon object, which the sync re-clones every time, so nothing outlives the state it was built from
+const SpreadStatsMemo = new WeakMap<CalcdexPokemon, Map<string, Partial<Showdown.StatsTable>>>();
+
+const spreadStatsFor = (
+  format: string,
+  pokemon: CalcdexPokemon,
+  nature: Showdown.PokemonNature,
+  ivs: Showdown.StatsTable,
+  evs: Showdown.StatsTable,
+  // the search's own candidateKey() for this spread, when it already has one (saves rebuilding it)
+  spreadKey?: string,
+): Partial<Showdown.StatsTable> => {
+  let memo = SpreadStatsMemo.get(pokemon);
+
+  if (!memo) {
+    memo = new Map();
+    SpreadStatsMemo.set(pokemon, memo);
+  }
+
+  const key = [
+    format,
+    pokemon.speciesForme,
+    pokemon.transformedForme,
+    pokemon.level,
+    pokemon.transformedLevel,
+    pokemon.dirtyBaseStats ? JSON.stringify(pokemon.dirtyBaseStats) : '',
+    spreadKey ?? [nature, ...StatNames.map((stat) => ivs?.[stat]), ...StatNames.map((stat) => evs?.[stat])].join(':'),
+  ].join('|');
+  let stats = memo.get(key);
+
+  if (!stats) {
+    stats = calcPokemonSpreadStats(format, {
+      ...pokemon,
+      nature,
+      ivs,
+      evs,
+    });
+    memo.set(key, stats);
+  }
+
+  return stats;
+};
+
+const scoreCandidateEvent = (
+  state: CalcdexBattleState,
+  event: HackmonsInferenceEvent,
+  candidatePokemon: CalcdexPokemon,
+  nature: Showdown.PokemonNature,
+  ivs: Showdown.StatsTable,
+  evs: Showdown.StatsTable,
+  candidateSpreadStats: Partial<Showdown.StatsTable>,
+  context: DamageEventContext,
+  rollCache?: RollCache,
+  modifierOverride?: ModifierOverride,
+): CandidateEventTerm => {
+  const rollKey = context?.relation && context.dex
+    ? eventRollKey(context, candidateSpreadStats, modifierOverride)
+    : null;
+  const observationKey = rollKey ? eventObservationKey(state, event, candidateSpreadStats) : null;
+  const cached = rollKey ? rollCache?.get(rollKey)?.terms?.get(observationKey) : null;
+
+  if (cached) {
+    return cached;
+  }
+
+  const match = evaluateCandidateEvent(
+    state,
+    event,
+    candidatePokemon,
+    nature,
+    ivs,
+    evs,
+    candidateSpreadStats,
+    context,
+    rollCache,
+    modifierOverride,
+  );
+  const term: CandidateEventTerm = { logLikelihood: match.logLikelihood, rangeDistance: match.rangeDistance };
+  const entry = rollKey && !match.error ? rollCache?.get(rollKey) : null;
+
+  if (entry) {
+    entry.terms = entry.terms || new Map();
+    entry.terms.set(observationKey, term);
+  }
+
+  return term;
+};
+
 const scoreCandidate = (
   state: CalcdexBattleState,
   damageGroups: DamageEventGroup[],
@@ -2144,13 +2280,9 @@ const scoreCandidate = (
   speedContexts: Map<string, SpeedEventContext>,
   rollCache?: RollCache,
   modifierOverride?: ModifierOverride,
+  spreadKey?: string,
 ): CandidateScore => {
-  const candidateSpreadStats = calcPokemonSpreadStats(state.format, {
-    ...defender,
-    nature,
-    ivs,
-    evs,
-  });
+  const candidateSpreadStats = spreadStatsFor(state.format, defender, nature, ivs, evs, spreadKey);
   let score = 0;
   // how many observations this spread makes outright IMPOSSIBLE (not merely unlikely). The likelihood
   // alone can't stand in for this: an in-range-but-unattainable observation -- one that sits between
@@ -2190,7 +2322,7 @@ const scoreCandidate = (
   });
 
   damageGroups.forEach(({ event, context, count }) => {
-    const match = evaluateCandidateEvent(
+    const term = scoreCandidateEvent(
       state,
       event,
       defender,
@@ -2203,11 +2335,11 @@ const scoreCandidate = (
       modifierOverride,
     );
 
-    if (match.rangeDistance > 0) {
+    if (term.rangeDistance > 0) {
       infeasible += count;
     }
 
-    score += match.logLikelihood * count;
+    score += term.logLikelihood * count;
   });
 
   return { score, infeasible };
@@ -3340,11 +3472,12 @@ const scoreSpreadCandidate = (
   speedContexts: Map<string, SpeedEventContext>,
   rollCache?: RollCache,
   modifierOverride?: ModifierOverride,
+  spreadKey?: string,
 ): SpreadCandidate => ({
   nature,
   ivs: cloneSpread(ivs),
   evs: cloneSpread(evs),
-  ...scoreCandidate(state, damageGroups, speedEvents, candidatePokemon, nature, ivs, evs, speedContexts, rollCache, modifierOverride),
+  ...scoreCandidate(state, damageGroups, speedEvents, candidatePokemon, nature, ivs, evs, speedContexts, rollCache, modifierOverride, spreadKey),
 });
 
 interface ProfileEntry {
@@ -3533,6 +3666,7 @@ function searchBestCandidates(
     nature: Showdown.PokemonNature,
     ivs: Showdown.StatsTable,
     evs: Showdown.StatsTable,
+    spreadKey?: string,
   ): SpreadCandidate => scoreSpreadCandidate(
     state,
     damageGroups,
@@ -3544,6 +3678,7 @@ function searchBestCandidates(
     speedContexts,
     rollCache,
     modifierOverride,
+    spreadKey,
   );
 
   const baseIvs = seed ? cloneSpread(seed.ivs) : blankSpread(DefaultIv);
@@ -3573,7 +3708,7 @@ function searchBestCandidates(
       return;
     }
 
-    const candidate = score(nature, ivs, evs);
+    const candidate = score(nature, ivs, evs, key);
 
     seen.set(key, candidate);
 
@@ -3661,16 +3796,11 @@ function searchBestCandidates(
         let candidate = seen.get(key);
 
         if (!candidate) {
-          candidate = score(centered.nature, ivs, evs);
+          candidate = score(centered.nature, ivs, evs, key);
           seen.set(key, candidate);
         }
 
-        const value = calcPokemonSpreadStats(state.format, {
-          ...candidatePokemon,
-          nature: centered.nature,
-          ivs,
-          evs,
-        })[stat];
+        const value = spreadStatsFor(state.format, candidatePokemon, centered.nature, ivs, evs, key)[stat];
         const existing = byValue.get(value);
 
         // fewest impossible observations first, then likelihood -- the same order the filter below
@@ -3937,10 +4067,11 @@ export const inferHackmonsSpread = (
     const endMonTimer = runtimer(l.scope, l);
 
     // damage rolls are memoized across this mon's ENTIRE search (phase 1 + every modifier hypothesis)
-    // and persisted across syncs too (perf audit remedy #4) -- keyed on the candidate stats that feed
-    // each calc, so an old event's roll is reused as long as the participants (and thus their real
-    // ability/item) haven't changed since it was cached; see RollCacheStore above
-    const rollCacheKey = [state.battleId, calcdexId, participantSignature].join('|');
+    // and persisted across syncs too (perf audit remedy #4). Each entry is keyed by its event's context
+    // id, whose signature already covers every participant's ability/item/state -- so a participant
+    // change re-keys exactly the events it touches. Keying the whole store on the participant list (as
+    // this used to) threw away every cached roll whenever the mon met a new opponent.
+    const rollCacheKey = [state.battleId, calcdexId].join('|');
     const rollCache = RollCacheStore.get(rollCacheKey) || new Map<string, CachedDamageRolls>();
 
     RollCacheStore.set(rollCacheKey, rollCache);
