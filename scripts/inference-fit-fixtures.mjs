@@ -573,6 +573,9 @@ if (MODE === 'forward') {
     scenario('thousand-arrows', twice({ base: { moveName: 'Thousand Arrows', target: 'Tornadus' } })),
     scenario('gravity-earthquake', twice({ base: { moveName: 'Earthquake', target: 'Tornadus' }, extra: { field: { isGravity: true } } })),
     scenario('roost-earthquake', twice({ base: { moveName: 'Earthquake', target: 'Tornadus' }, extra: { defenderSnapshot: { roosted: true } } })),
+    // Tera Shell forced this Body Slam "not very effective" into Water Vaporeon (neutral by type).
+    // Regression guard only: the damage fit already rejected the -ate classes here before the fix
+    scenario('tera-shell', twice({ base: { moveName: 'Body Slam', effectiveness: 'resisted' }, extra: { defenderSnapshot: { teraShell: true } } })),
     // a Normal move that LANDED on a Ghost had its immunity lifted (Scrappy, Mind's Eye, Foresight)
     scenario('landed-on-ghost', twice({ base: { moveName: 'Body Slam', target: 'Gengar' } })),
     scenario('tera-defender', twice({ base: { moveName: 'Body Slam', effectiveness: 'resisted' }, extra: { defenderSnapshot: tera('Rock') } })),
@@ -636,6 +639,14 @@ if (MODE === 'forward') {
     orderEvent({ id: 'p1', faster: 'Mew', fasterMove: 'Thunder Wave', slower: 'Deoxys-Attack', slowerMove: 'Psycho Boost' }),
   ]);
   results.push({ ...prankster, ok: !prankster.modifiers.length });
+
+  // the log showed Mew's Quark Drive boosting Speed (x1.5): outspeeding the 336-Spe Deoxys-Attack is
+  // then reachable (Mew's max 328 x1.5 = 492) and needs no Choice Scarf to explain it
+  const quarkDrive = summarize('observed-quark-drive-speed', speState('quarkdrive'), [
+    bodySlam,
+    { ...orderEvent({ id: 'q1', faster: 'Mew', fasterMove: 'Body Slam', slower: 'Deoxys-Attack', slowerMove: 'Psycho Boost' }), attackerSnapshot: { boostedStat: 'spe' } },
+  ]);
+  results.push({ ...quarkDrive, ok: !quarkDrive.modifiers.length && quarkDrive.speStat > 224 });
 
   // our Swift Swim Vaporeon (166 Spe) is 332 in rain: moving first caps Mew at <= 331, not <= 165
   const swiftSwim = summarize('our-swift-swim-in-rain', speState('swiftswim', 'Swift Swim'), [

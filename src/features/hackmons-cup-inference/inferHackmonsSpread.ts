@@ -5,7 +5,12 @@ import {
   type ShowdexCalcMods,
   calculate,
 } from '@smogon/calc';
-import { PokemonNatures, PokemonSpeedReductionItems, PokemonTypeAssociativeItems } from '@showdex/consts/dex';
+import {
+  PokemonBoosterAbilities,
+  PokemonNatures,
+  PokemonSpeedReductionItems,
+  PokemonTypeAssociativeItems,
+} from '@showdex/consts/dex';
 import {
   type CalcdexBattleField,
   type CalcdexBattleState,
@@ -891,6 +896,16 @@ const applyEventPokemonSnapshot = (
     : null;
   const types = roostedTypes ? (roostedTypes.length ? roostedTypes : ['Normal'] as Showdown.TypeName[]) : eventTypes;
   const abilityId = formatId(pokemon.dirtyAbility || pokemon.ability);
+  // Protosynthesis/Quark Drive & Slow Start were on (or not) at the time of the event, whatever they are
+  // now -- left to the live values, a boost active NOW was granted to every earlier hit
+  const booster = PokemonBoosterAbilities.some((ability) => formatId(ability) === abilityId);
+  const abilityToggled = booster
+    ? !!snapshot.boostedStat
+    : abilityId === 'slowstart'
+      ? !!snapshot.slowStart
+      : snapshot.typeChanged && ['protean', 'libero'].includes(abilityId)
+        ? false
+        : pokemon.abilityToggled;
 
   return applyEventItem({
     ...pokemon,
@@ -899,9 +914,8 @@ const applyEventPokemonSnapshot = (
     teraType: snapshot.teraType || null,
     dirtyTeraType: null,
     terastallized: !!snapshot.terastallized,
-    abilityToggled: snapshot.typeChanged && ['protean', 'libero'].includes(abilityId)
-      ? false
-      : pokemon.abilityToggled,
+    abilityToggled,
+    ...(booster ? { boostedStat: snapshot.boostedStat || null, dirtyBoostedStat: null } : null),
   }, snapshot);
 };
 
@@ -1115,7 +1129,8 @@ const resolveEventTypeContext = (
   const moveId = formatId(moveName);
   const dexType = getGenDexForFormat(state.format)?.moves.get(moveId as never)?.type as Showdown.TypeName;
 
-  if (!attacker || !defender?.types?.length || !dexType) {
+  // Tera Shell forced this line "not very effective" whatever the move's type
+  if (!attacker || !defender?.types?.length || !dexType || event.defenderSnapshot?.teraShell) {
     return null;
   }
 
@@ -2140,16 +2155,24 @@ const eventHasPriorityMismatch = (
   return fasterPriority === null || slowerPriority === null || fasterPriority !== slowerPriority;
 };
 
-// the known (other) mon's own Speed ability, where the event's field snapshot and status decide it
-// (Unburden, Slow Start and Protosynthesis/Quark Drive depend on state the event doesn't carry)
+// Speed effects the log itself shows at the time, whoever's they are: a Protosynthesis/Quark Drive Speed
+// boost and Slow Start
+const observedSpeedMultiplier = (
+  snapshot?: HackmonsInferencePokemonSnapshot,
+): number => (snapshot?.boostedStat === 'spe' ? 1.5 : 1) * (snapshot?.slowStart ? 0.5 : 1);
+
+// the known (other) mon's own Speed ability, where the event's field snapshot, status and item state
+// decide it
 const knownAbilitySpeedMultiplier = (
   pokemon: CalcdexPokemon,
   field: HackmonsInferenceFieldSnapshot,
   status: Showdown.PokemonStatus | '',
+  snapshot?: HackmonsInferencePokemonSnapshot,
 ): number => {
   const umbrella = formatId(pokemon?.dirtyItem ?? pokemon?.item) === 'utilityumbrella';
 
   switch (formatId(pokemon?.ability)) {
+    case 'unburden': return snapshot?.itemLost ? 2 : 1;
     case 'swiftswim': return !umbrella && ['Rain', 'Heavy Rain'].includes(field?.weather) ? 2 : 1;
     case 'chlorophyll': return !umbrella && ['Sun', 'Harsh Sunshine'].includes(field?.weather) ? 2 : 1;
     case 'sandrush': return field?.weather === 'Sand' ? 2 : 1;
@@ -2215,12 +2238,16 @@ const resolveCandidateSpeedValues = (
   // instead uses its own real, already-revealed item (otherItemSpeedMultiplier) -- ignoring that (as
   // this used to) makes a real Scarf/Iron Ball on our own side look like a speed contradiction on the
   // candidate and produces a false modifier hypothesis for them instead
+  const candidateSnapshot = relation === 'attacker' ? event.attackerSnapshot : event.defenderSnapshot;
+  const otherSnapshot = relation === 'attacker' ? event.defenderSnapshot : event.attackerSnapshot;
+  const candidateMultiplier = (modifierOverride?.speedMultiplier || 1) * observedSpeedMultiplier(candidateSnapshot);
   const candidateSpeed = relation === 'attacker'
-    ? applySpeedModifiers(candidateRawSpe, event.attackerBoosts, event.attackerStatus, modifierOverride?.speedMultiplier)
-    : applySpeedModifiers(candidateRawSpe, event.defenderBoosts, event.defenderStatus, modifierOverride?.speedMultiplier);
+    ? applySpeedModifiers(candidateRawSpe, event.attackerBoosts, event.attackerStatus, candidateMultiplier)
+    : applySpeedModifiers(candidateRawSpe, event.defenderBoosts, event.defenderStatus, candidateMultiplier);
   const otherStatus = relation === 'attacker' ? event.defenderStatus : event.attackerStatus;
   const otherMultiplier = otherItemSpeedMultiplier
-    * knownAbilitySpeedMultiplier(context.otherPokemon, event.field, otherStatus);
+    * knownAbilitySpeedMultiplier(context.otherPokemon, event.field, otherStatus, otherSnapshot)
+    * observedSpeedMultiplier(otherSnapshot);
   const otherSpeed = relation === 'attacker'
     ? applySpeedModifiers(otherRawSpe, event.defenderBoosts, event.defenderStatus, otherMultiplier)
     : applySpeedModifiers(otherRawSpe, event.attackerBoosts, event.attackerStatus, otherMultiplier);
@@ -4050,13 +4077,20 @@ const describeSpeedBound = (
     const otherStatus = relation === 'attacker' ? event.defenderStatus : event.attackerStatus;
     const candidateBoosts = relation === 'attacker' ? event.attackerBoosts : event.defenderBoosts;
     const candidateStatus = relation === 'attacker' ? event.attackerStatus : event.defenderStatus;
-    const otherItemSpeedMultiplier = knownItemSpeedMultiplier(otherMatch?.pokemon);
+    const otherSnapshot = relation === 'attacker' ? event.defenderSnapshot : event.attackerSnapshot;
+    const candidateSnapshot = relation === 'attacker' ? event.attackerSnapshot : event.defenderSnapshot;
+    // the same event-time multipliers resolveCandidateSpeedValues() scores with
+    const otherSpeedMultiplier = knownItemSpeedMultiplier(otherMatch?.pokemon)
+      * knownAbilitySpeedMultiplier(otherMatch?.pokemon, event.field, otherStatus, otherSnapshot)
+      * observedSpeedMultiplier(otherSnapshot);
     const otherModifiedSpe = otherRawSpe
-      ? applySpeedModifiers(otherRawSpe, otherBoosts, otherStatus, otherItemSpeedMultiplier)
+      ? applySpeedModifiers(otherRawSpe, otherBoosts, otherStatus, otherSpeedMultiplier)
       : null;
+    // a logged boost (e.g. Quark Drive) on the candidate means its EFFECTIVE Spe beat this, not its raw stat
     const speedLabel = hasSpeedModifier(otherBoosts, otherStatus)
       || hasSpeedModifier(candidateBoosts, candidateStatus)
-      || otherItemSpeedMultiplier !== 1
+      || otherSpeedMultiplier !== 1
+      || observedSpeedMultiplier(candidateSnapshot) !== 1
       ? 'modified Spe'
       : 'Spe';
 

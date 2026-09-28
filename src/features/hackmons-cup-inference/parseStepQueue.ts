@@ -227,6 +227,9 @@ const clonePokemonSnapshot = (
   roosted: !!snapshot?.roosted,
   itemLost: !!snapshot?.itemLost,
   consumedItem: snapshot?.consumedItem || undefined,
+  boostedStat: snapshot?.boostedStat || null,
+  slowStart: !!snapshot?.slowStart,
+  teraShell: snapshot?.teraShell || undefined,
 });
 
 const getPokemonSnapshot = (
@@ -457,6 +460,9 @@ const processChunk = (
     // an item used up by the hit that follows it: a resist berry (`[weaken]`, defender) or a Gem
     // (`[from] gem`, attacker)
     const consumedForHit = new Map<string, string>();
+
+    // defenders whose next hit Tera Shell forced "not very effective"
+    const teraShellIds = new Set<string>();
 
     // the target of a Future Sight/Doom Desire that just came due: its hit is logged like a move's,
     // but with no `move` line of its own, so it would land on whichever move came last
@@ -790,6 +796,43 @@ const processChunk = (
 
         if (target.id) {
           instructedIds.add(target.id);
+        }
+
+        return;
+      }
+
+      // `-activate|X|ability: Y` & `-start|X|ability: Y` name X's own ability -- as much a reveal as
+      // `-ability`, and the only one Tera Shell, Protosynthesis/Quark Drive or Slow Start ever give
+      if ((type === '-activate' || type === '-start') && /^ability:/i.test(parts[3] || '')) {
+        const pokemon = parsePokemonToken(parts[2]);
+        const ability = effectId(parts[3]);
+
+        if (pokemon.id) {
+          pokemonState.set(pokemon.id, {
+            ...clonePokemonSnapshot(pokemonState.get(pokemon.id)),
+            abilityConfirmed: true,
+            ...(ability === 'slowstart' ? { slowStart: true } : null),
+          });
+
+          if (ability === 'terashell') {
+            teraShellIds.add(pokemon.id);
+          }
+        }
+      }
+
+      // Protosynthesis/Quark Drive log the stat they boost as `-start|X|quarkdrivespa`
+      const boosterStart = type === '-start' ? /^(?:protosynthesis|quarkdrive)(atk|def|spa|spd|spe)$/.exec(effectId(parts[3])) : null;
+
+      if (boosterStart || (type === '-end' && ['protosynthesis', 'quarkdrive', 'slowstart'].includes(effectId(parts[3])))) {
+        const pokemon = parsePokemonToken(parts[2]);
+
+        if (pokemon.id) {
+          pokemonState.set(pokemon.id, {
+            ...clonePokemonSnapshot(pokemonState.get(pokemon.id)),
+            ...(boosterStart
+              ? { boostedStat: boosterStart[1] as Showdown.StatNameNoHp }
+              : effectId(parts[3]) === 'slowstart' ? { slowStart: false } : { boostedStat: null }),
+          });
         }
 
         return;
@@ -1339,6 +1382,7 @@ const processChunk = (
           defenderSnapshot: {
             ...getPokemonSnapshot(pokemonState, defender.id),
             consumedItem: consumedForHit.get(defender.id),
+            teraShell: teraShellIds.delete(defender.id) || undefined,
           },
           rawLine: step,
           defenderStint: (defender.slot ? activeSlotStintState.get(defender.slot) : null) || activeStintState.get(defender.id) || 0,

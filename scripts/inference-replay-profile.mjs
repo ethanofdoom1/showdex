@@ -234,6 +234,7 @@ const applyLive = (line) => {
 
 const syncs = [];
 let lastEventCount = 0;
+let lastOutput = {};
 
 const sync = (upTo, turn) => {
   const stepQueue = lines.slice(0, upTo);
@@ -259,6 +260,7 @@ const sync = (upTo, turn) => {
     estimateHash: createHash('sha256').update(JSON.stringify(Object.entries(output).map(([id, m]) => [id, m?.estimate]))).digest('hex').slice(0, 16),
   });
   lastEventCount = parsed.events.length;
+  lastOutput = output;
 };
 
 let turn = 0;
@@ -279,8 +281,33 @@ const total = (key) => +syncs.reduce((sum, s) => sum + s[key], 0).toFixed(1);
 const sorted = (key) => syncs.map((s) => s[key]).sort((a, b) => a - b);
 const pct = (key, p) => sorted(key)[Math.min(syncs.length - 1, Math.floor(syncs.length * p))];
 
+// the replay knows the truth: every inferred mon's final estimate vs its real set, % per stat, plus the
+// item/ability hypotheses it adopted
+const accuracy = Object.entries(lastOutput).map(([calcdexId, inference]) => {
+  const estimate = inference?.estimate;
+  const truth = teams.p2.find((spec) => 'p2-' + gen.species.get(spec.species.toLowerCase().replace(/[^a-z0-9]+/g, '')).id === calcdexId);
+  const pokemon = state.p2.pokemon.find((p) => p.calcdexId === calcdexId);
+
+  if (!estimate?.ivs || !truth || !pokemon || !(inference.estimate.matches || []).length) {
+    return null;
+  }
+
+  const real = calcPokemonSpreadStats(format, { ...pokemon, nature: truth.nature, ivs: truth.ivs, evs: truth.evs });
+  const guessed = calcPokemonSpreadStats(format, { ...pokemon, nature: estimate.nature, ivs: estimate.ivs, evs: estimate.evs });
+
+  return {
+    mon: pokemon.name,
+    events: estimate.matches.length,
+    nature: estimate.nature + (estimate.nature === truth.nature ? '' : ' (real ' + truth.nature + ')'),
+    deltaPct: Object.fromEntries(Object.keys(real).map((stat) => [stat, +((100 * (guessed[stat] - real[stat])) / real[stat]).toFixed(1)])),
+    adopted: (estimate.inferredModifiers || []).filter((m) => m.adopted).map((m) => m.modifier?.id),
+    real: truth.ability + ' @ ' + truth.item,
+  };
+}).filter(Boolean);
+
 process.stdout.write(JSON.stringify({
   seed: ${JSON.stringify(seed)},
+  accuracy,
   syncMode: SYNCS,
   logLines: lines.length,
   turns: turn,

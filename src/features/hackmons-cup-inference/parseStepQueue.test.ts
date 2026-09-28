@@ -342,6 +342,47 @@ describe('parseHackmonsInferenceEvents()', () => {
     ], 'fusion').filter(([, move]) => move === 'Fusion Flare')).toEqual([[1, 'Fusion Flare', false], [2, 'Fusion Flare', true]]);
   });
 
+  it('tracks abilities the log reveals by activation, and their state at each hit', () => {
+    const { events } = parseHackmonsInferenceEvents([
+      '|switch|p1a: Terapagos|Terapagos-Terastal, L50|100/100',
+      '|switch|p2a: Iron Valiant|Iron Valiant, L50|100/100',
+      '|-enditem|p2a: Iron Valiant|Booster Energy',
+      '|-activate|p2a: Iron Valiant|ability: Quark Drive|[fromitem]',
+      '|-start|p2a: Iron Valiant|quarkdrivespe',
+      '|turn|1',
+      '|move|p2a: Iron Valiant|Moonblast|p1a: Terapagos',
+      '|-activate|p1a: Terapagos|ability: Tera Shell',
+      '|-resisted|p1a: Terapagos',
+      '|-damage|p1a: Terapagos|80/100',
+      '|move|p1a: Terapagos|Tera Starstorm|p2a: Iron Valiant',
+      '|-damage|p2a: Iron Valiant|60/100',
+      '|turn|2',
+      '|-end|p2a: Iron Valiant|Quark Drive',
+      '|move|p2a: Iron Valiant|Moonblast|p1a: Terapagos',
+      '|-damage|p1a: Terapagos|55/100',
+      '|turn|3',
+      '|switch|p2a: Regigigas|Regigigas, L50|100/100',
+      '|-start|p2a: Regigigas|ability: Slow Start',
+      '|move|p2a: Regigigas|Body Slam|p1a: Terapagos',
+      '|-damage|p1a: Terapagos|45/100',
+    ], 'activations');
+
+    expect(events.filter((event) => event.eventType !== 'speed').map((event) => [
+      event.turn,
+      event.moveName,
+      event.attackerSnapshot?.abilityConfirmed,
+      event.attackerSnapshot?.boostedStat,
+      event.attackerSnapshot?.slowStart,
+      !!event.defenderSnapshot?.teraShell,
+    ])).toEqual([
+      [1, 'Moonblast', true, 'spe', false, true],
+      // Terapagos's Tera Shell was revealed on the hit before, so its ability is known from then on
+      [1, 'Tera Starstorm', true, null, false, false],
+      [2, 'Moonblast', true, null, false, false],
+      [3, 'Body Slam', true, null, true, false],
+    ]);
+  });
+
   it('attributes a multi-hit move\'s crit to the hit it actually landed on', () => {
     const { events } = parseHackmonsInferenceEvents([
       '|switch|p1a: Weavile|Weavile, L50|100/100',

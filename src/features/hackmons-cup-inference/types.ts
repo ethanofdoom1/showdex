@@ -174,6 +174,23 @@ export interface HackmonsInferencePokemonSnapshot {
    * log reports just before the damage, and which still applied to it.
    */
   consumedItem?: string;
+
+  /**
+   * The stat Protosynthesis/Quark Drive was boosting at the time (`-start|X|quarkdrivespa` until its
+   * `-end` or a switch-out), or null when neither was active.
+   */
+  boostedStat?: Showdown.StatNameNoHp | null;
+
+  /**
+   * Whether Slow Start was halving this Pokemon's Attack & Speed at the time.
+   */
+  slowStart?: boolean;
+
+  /**
+   * Whether Tera Shell forced this hit "not very effective" (logged just before it), so its
+   * effectiveness line says nothing about the move's type.
+   */
+  teraShell?: boolean;
 }
 
 export interface HackmonsInferenceAssumptions {
