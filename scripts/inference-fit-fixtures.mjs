@@ -643,6 +643,16 @@ if (MODE === 'forward') {
   ]);
   results.push({ ...prankster, ok: !prankster.modifiers.length });
 
+  // but moving SECOND with Recover is still Speed evidence: Prankster/Triage only raise priority, so a
+  // raised Recover would have beaten Vaporeon's Waterfall. Mew (min 184 Spe) behind the 166-Spe
+  // Vaporeon is infeasible, so a Speed-lowering class must be proposed (read as priority-unknowable,
+  // the order was dropped and nothing was)
+  const statusSecond = summarize('status-move-second', speState('statussecond'), [
+    bodySlam,
+    orderEvent({ id: 'r1', faster: 'Vaporeon', fasterMove: 'Waterfall', slower: 'Mew', slowerMove: 'Recover' }),
+  ]);
+  results.push({ ...statusSecond, ok: statusSecond.modifiers.length > 0 });
+
   // the log showed Mew's Quark Drive boosting Speed (x1.5): outspeeding the 336-Spe Deoxys-Attack is
   // then reachable (Mew's max 328 x1.5 = 492) and needs no Choice Scarf to explain it
   const quarkDrive = summarize('observed-quark-drive-speed', speState('quarkdrive'), [

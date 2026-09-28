@@ -2127,14 +2127,14 @@ const resolveDamageEventContext = (
   return resolved;
 };
 
-// a speed event's move priority as of the event, or null when it can't be known: Prankster (Status
-// moves), Gale Wings (Flying moves, full HP only) and Triage (healing moves) raise it silently, so
-// unless the mover's ability is known -- our own side, or revealed -- the order may be priority alone
+// a speed event's move priority as of the event, and whether it may have been raised past that: Prankster
+// (Status moves), Gale Wings (Flying moves, full HP only) and Triage (healing moves) raise it silently,
+// so unless the mover's ability is known -- our own side, or revealed -- the order may be priority alone
 const eventMovePriority = (
   state: CalcdexBattleState,
   event: HackmonsInferenceEvent,
   side: 'faster' | 'slower',
-): number | null => {
+): { priority: number; raisable: boolean; } => {
   const moveName = side === 'faster' ? event.moveName : event.slowerMoveName;
   const move = getGenDexForFormat(state.format)?.moves.get(formatId(moveName) as never) as {
     priority?: number;
@@ -2149,7 +2149,7 @@ const eventMovePriority = (
   const triage = !!move?.flags?.heal;
 
   if (!prankster && !galeWings && !triage) {
-    return basePriority;
+    return { priority: basePriority, raisable: false };
   }
 
   const playerKey = side === 'faster' ? event.attackerKey : event.defenderKey;
@@ -2159,18 +2159,21 @@ const eventMovePriority = (
     : findPokemonByLogName(state, event.defenderName, event.defenderKey, event.defenderId)?.pokemon;
 
   if (playerKey !== state.authPlayerKey && !snapshot?.abilityConfirmed) {
-    return null;
+    return { priority: basePriority, raisable: true };
   }
 
   const ability = formatId(pokemon?.ability);
 
   if (galeWings && ability === 'galewings') {
-    return null;
+    return { priority: basePriority, raisable: true };
   }
 
-  return basePriority
-    + (prankster && ability === 'prankster' ? 1 : 0)
-    + (triage && ability === 'triage' ? 3 : 0);
+  return {
+    priority: basePriority
+      + (prankster && ability === 'prankster' ? 1 : 0)
+      + (triage && ability === 'triage' ? 3 : 0),
+    raisable: false,
+  };
 };
 
 // Stall, Lagging Tail & Full Incense (and Mycelium Might, for Status moves) make their holder act last in
@@ -2208,12 +2211,13 @@ const eventHasPriorityMismatch = (
   state: CalcdexBattleState,
   event: HackmonsInferenceEvent,
 ): boolean => {
-  const fasterPriority = eventMovePriority(state, event, 'faster');
-  const slowerPriority = eventMovePriority(state, event, 'slower');
+  const faster = eventMovePriority(state, event, 'faster');
+  const slower = eventMovePriority(state, event, 'slower');
 
-  return fasterPriority === null
-    || slowerPriority === null
-    || fasterPriority !== slowerPriority
+  // a raise only moves a mon earlier: one that still moved second at the first move's priority wasn't
+  // raised, so only the first mover's possible raise leaves the order unreadable
+  return faster.raisable
+    || faster.priority !== slower.priority
     || movesLastInBracket(state, event, 'faster')
     || movesLastInBracket(state, event, 'slower');
 };
