@@ -1272,6 +1272,8 @@ interface EventCalcBase {
   // the other participant, complete with its event-time HP and faint count
   other: CalcdexPokemon;
   field: ReturnType<typeof createSmogonField>;
+  // the other participant's calc object, built on the first roll miss (see evaluateCandidateEvent())
+  smogonOther?: ReturnType<typeof createSmogonPokemon>;
 }
 
 const EventCalcBaseMemo = new WeakMap<CalcdexBattleState, Map<string, EventCalcBase>>();
@@ -1459,25 +1461,41 @@ const evaluateCandidateEvent = (
     const { field } = base;
 
     try {
-      const attacker = createSmogonPokemon(
-        state.format,
-        state.gameType,
-        attackerWithEventHp,
-        context.moveName,
-        defenderWithEventHp,
-      );
+      // the other participant's calc object only reads its opponent's ability/species (Ruin
+      // cancellation), which the base candidate shares with every spread -- so it's built once
+      const otherSmogon = () => {
+        if (base.smogonOther === undefined) {
+          base.smogonOther = relation === 'attacker'
+            ? createSmogonPokemon(state.format, state.gameType, base.other, null, base.candidate)
+            : createSmogonPokemon(state.format, state.gameType, base.other, context.moveName, base.candidate);
+        }
+
+        return base.smogonOther;
+      };
+
+      const attacker = relation === 'attacker'
+        ? createSmogonPokemon(
+          state.format,
+          state.gameType,
+          attackerWithEventHp,
+          context.moveName,
+          defenderWithEventHp,
+        )
+        : otherSmogon();
 
       if (!attacker) {
         return emptyMatch(`invalid attacker ${attackerMatch.pokemon.speciesForme || event.attackerName}`);
       }
 
-      const smogonDefender = createSmogonPokemon(
-        state.format,
-        state.gameType,
-        defenderWithEventHp,
-        null,
-        attackerWithEventHp,
-      );
+      const smogonDefender = relation === 'defender'
+        ? createSmogonPokemon(
+          state.format,
+          state.gameType,
+          defenderWithEventHp,
+          null,
+          attackerWithEventHp,
+        )
+        : otherSmogon();
 
       if (!smogonDefender) {
         return emptyMatch(`invalid defender ${defenderCandidate.speciesForme || event.defenderName}`);
