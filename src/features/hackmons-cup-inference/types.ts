@@ -182,6 +182,18 @@ export interface HackmonsInferencePokemonSnapshot {
   consumedItem?: string;
 
   /**
+   * How many item swaps (Trick, Switcheroo) this Pokemon had been through as of this event; the parser
+   * resolves it to `heldItem` once the swap that reveals that epoch's item is logged.
+   */
+  itemEpoch?: number;
+
+  /**
+   * The item held at the time, when a later swap revealed it (null: none) -- the live item is then the
+   * swapped-in one and wrong for this event.
+   */
+  heldItem?: string | null;
+
+  /**
    * The stat Protosynthesis/Quark Drive was boosting at the time (`-start|X|quarkdrivespa` until its
    * `-end` or a switch-out), or null when neither was active.
    */

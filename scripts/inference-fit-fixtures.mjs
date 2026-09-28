@@ -811,6 +811,13 @@ if (MODE === 'forward') {
     damageEvent({ id: 'k2', turn: 2, moveName: 'Body Slam', damage: bandRoll }),
   ]);
 
+  // Mew's Choice Band was Tricked away later (its live item is now the Leftovers it got back): the hits
+  // before the swap carry it, as the parser resolves from the swap's own -item lines
+  scenario('band-tricked-away-later', itemState('trick', { item: 'Leftovers' }), [
+    { ...damageEvent({ id: 't1', turn: 1, moveName: 'Body Slam', damage: bandRoll }), attackerSnapshot: { heldItem: 'Choice Band' } },
+    { ...damageEvent({ id: 't2', turn: 2, moveName: 'Body Slam', damage: bandRoll }), attackerSnapshot: { heldItem: 'Choice Band' } },
+  ]);
+
   // control: no item, ever
   scenario('control-no-item', itemState('none'), [
     crunch('n0', 1),

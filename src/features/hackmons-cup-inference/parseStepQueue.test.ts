@@ -400,6 +400,36 @@ describe('parseHackmonsInferenceEvents()', () => {
       .toEqual([['Smack Down', false], ['Earthquake', true], ['Stone Edge', false]]);
   });
 
+  it('resolves each hit to the item held then, once a later Trick reveals it', () => {
+    const { events } = parseHackmonsInferenceEvents([
+      '|switch|p1a: Scizor|Scizor, L50|100/100',
+      '|switch|p2a: Mew|Mew, L50|100/100',
+      '|turn|1',
+      '|move|p1a: Scizor|Bullet Punch|p2a: Mew', '|-damage|p2a: Mew|80/100',
+      '|move|p2a: Mew|Body Slam|p1a: Scizor', '|-resisted|p1a: Scizor', '|-damage|p1a: Scizor|90/100',
+      '|turn|2',
+      '|move|p2a: Mew|Trick|p1a: Scizor',
+      '|-activate|p2a: Mew|move: Trick|[of] p1a: Scizor',
+      '|-item|p1a: Scizor|Leftovers|[from] move: Trick',
+      '|-item|p2a: Mew|Choice Band|[from] move: Trick',
+      '|move|p1a: Scizor|Bullet Punch|p2a: Mew', '|-damage|p2a: Mew|65/100',
+      '|turn|3',
+      '|move|p2a: Mew|Body Slam|p1a: Scizor', '|-resisted|p1a: Scizor', '|-damage|p1a: Scizor|70/100',
+    ], 'trick');
+
+    expect(events.filter((event) => event.eventType !== 'speed').map((event) => [
+      event.turn,
+      event.moveName,
+      event.attackerSnapshot?.heldItem,
+      event.defenderSnapshot?.heldItem,
+    ])).toEqual([
+      [1, 'Bullet Punch', 'Choice Band', 'Leftovers'],
+      [1, 'Body Slam', 'Leftovers', 'Choice Band'],
+      [2, 'Bullet Punch', 'Leftovers', 'Choice Band'],
+      [3, 'Body Slam', 'Choice Band', 'Leftovers'],
+    ]);
+  });
+
   it('attributes a multi-hit move\'s crit to the hit it actually landed on', () => {
     const { events } = parseHackmonsInferenceEvents([
       '|switch|p1a: Weavile|Weavile, L50|100/100',

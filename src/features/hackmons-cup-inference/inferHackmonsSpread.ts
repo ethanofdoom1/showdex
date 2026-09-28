@@ -860,13 +860,17 @@ const applyEventFieldSnapshot = (
   dirtyTerrain: null,
 });
 
-// the item held at the time of the event: one this very hit consumed (a resist berry, a Gem), else
-// one the mon only lost later (Showdown keeps it as prevItem), else whatever it holds now. No snapshot
-// reads as the parser's default: nothing lost yet.
+// the item held at the time of the event: one this very hit consumed (a resist berry, a Gem), else what a
+// later Trick/Switcheroo revealed it held then, else one the mon only lost later (Showdown keeps it as
+// prevItem), else whatever it holds now. No snapshot reads as the parser's default: nothing lost yet.
 const applyEventItem = (
   pokemon: CalcdexPokemon,
   snapshot?: HackmonsInferencePokemonSnapshot,
 ): CalcdexPokemon => {
+  if (!snapshot?.consumedItem && snapshot?.heldItem !== undefined) {
+    return { ...pokemon, item: (snapshot.heldItem || '') as ItemName, dirtyItem: null };
+  }
+
   const eventItem = (snapshot?.consumedItem as ItemName)
     || (!snapshot?.itemLost && !pokemon?.item && pokemon?.prevItem)
     || null;

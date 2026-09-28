@@ -228,6 +228,8 @@ const clonePokemonSnapshot = (
   grounded: !!snapshot?.grounded,
   itemLost: !!snapshot?.itemLost,
   consumedItem: snapshot?.consumedItem || undefined,
+  itemEpoch: snapshot?.itemEpoch,
+  heldItem: snapshot?.heldItem,
   boostedStat: snapshot?.boostedStat || null,
   slowStart: !!snapshot?.slowStart,
   teraShell: snapshot?.teraShell || undefined,
@@ -308,6 +310,10 @@ interface ChunkMutableState {
   // players who had a mon faint this turn / last turn (Retaliate)
   faintedThisTurnState: Set<CalcdexPlayerKey>;
   faintedLastTurnState: Set<CalcdexPlayerKey>;
+  // item swaps (Trick, Switcheroo): each mon's current swap count ("epoch") and, per epoch, the item it
+  // held then (null: none) -- a swap is where the log names what BOTH mons were holding before it
+  itemEpochState: Map<string, number>;
+  itemHistoryState: Map<string, (string | null)[]>;
 }
 
 const createParserState = (): ChunkMutableState => ({
@@ -339,6 +345,8 @@ const createParserState = (): ChunkMutableState => ({
   moveResultState: new Map(),
   faintedThisTurnState: new Set(),
   faintedLastTurnState: new Set(),
+  itemEpochState: new Map(),
+  itemHistoryState: new Map(),
   fieldState: {
     weather: null,
     terrain: null,
@@ -388,6 +396,8 @@ const cloneParserState = (
   moveResultState: new Map([...state.moveResultState].map(([id, entry]) => [id, { ...entry }])),
   faintedThisTurnState: new Set(state.faintedThisTurnState),
   faintedLastTurnState: new Set(state.faintedLastTurnState),
+  itemEpochState: new Map(state.itemEpochState),
+  itemHistoryState: new Map([...state.itemHistoryState].map(([id, items]) => [id, [...items]])),
 });
 
 // processes a single turn-chunk against the running (mutable) parser state, returning just that
@@ -421,6 +431,8 @@ const processChunk = (
     moveResultState,
     faintedThisTurnState,
     faintedLastTurnState,
+    itemEpochState,
+    itemHistoryState,
   } = state;
 
   const events: HackmonsInferenceEvent[] = [];
@@ -464,6 +476,16 @@ const processChunk = (
 
     // defenders whose next hit Tera Shell forced "not very effective"
     const teraShellIds = new Set<string>();
+
+    // the pair (and their epochs going in) of the Trick/Switcheroo whose item lines follow
+    let pendingSwap: { epochs: Map<string, number>; } = null;
+
+    const recordHeldItem = (pokemonId: string, epoch: number, item: string | null) => {
+      const history = itemHistoryState.get(pokemonId) || [];
+
+      history[epoch] = item;
+      itemHistoryState.set(pokemonId, history);
+    };
 
     // the target of a Future Sight/Doom Desire that just came due: its hit is logged like a move's,
     // but with no `move` line of its own, so it would land on whichever move came last
@@ -1026,9 +1048,41 @@ const processChunk = (
       // like `abilityConfirmed` above (events already parsed aren't retroactively updated); a
       // revealed-then-consumed item incorrectly still reads as held for later events -- known,
       // documented limitation (spec §2 "item consumption timelines")
+      if (type === '-activate' && ['trick', 'switcheroo'].includes(effectId(parts[3]))) {
+        const source = parsePokemonToken(parts[2]);
+        const target = parsePokemonToken(parts.find((part) => part.startsWith('[of]'))?.replace(/^\[of\]\s*/, ''));
+
+        pendingSwap = source.id && target.id ? {
+          epochs: new Map([source.id, target.id].map((id) => [id, itemEpochState.get(id) || 0])),
+        } : null;
+
+        return;
+      }
+
       if (type === '-item' || type === '-enditem') {
         const pokemon = parsePokemonToken(parts[2]);
         const item = effectId(parts[3]);
+        const swapped = !!pendingSwap?.epochs.has(pokemon.id)
+          && parts.some((part) => /^\[from\] move: (?:Trick|Switcheroo)$/i.test(part));
+
+        // `-item|M|I` = M received I, so the OTHER mon held I going in; `-enditem|M|I` = M gave I away
+        // for nothing. Either way M moves to its next epoch holding whatever it now has
+        if (swapped) {
+          const epoch = pendingSwap.epochs.get(pokemon.id);
+
+          if (type === '-item') {
+            pendingSwap.epochs.forEach((otherEpoch, otherId) => {
+              if (otherId !== pokemon.id) {
+                recordHeldItem(otherId, otherEpoch, parts[3]);
+              }
+            });
+          } else {
+            recordHeldItem(pokemon.id, epoch, parts[3]);
+          }
+
+          itemEpochState.set(pokemon.id, epoch + 1);
+          recordHeldItem(pokemon.id, epoch + 1, type === '-item' ? parts[3] : null);
+        }
 
         if (type === '-enditem' && item === 'focussash' && pokemon.id) {
           survivalCapIds.add(pokemon.id);
@@ -1392,11 +1446,13 @@ const processChunk = (
           attackerSnapshot: {
             ...getPokemonSnapshot(pokemonState, pendingMove.attackerId),
             consumedItem: consumedForHit.get(pendingMove.attackerId),
+            itemEpoch: itemEpochState.get(pendingMove.attackerId),
           },
           defenderSnapshot: {
             ...getPokemonSnapshot(pokemonState, defender.id),
             consumedItem: consumedForHit.get(defender.id),
             teraShell: teraShellIds.delete(defender.id) || undefined,
+            itemEpoch: itemEpochState.get(defender.id),
           },
           rawLine: step,
           defenderStint: (defender.slot ? activeSlotStintState.get(defender.slot) : null) || activeStintState.get(defender.id) || 0,
@@ -1538,6 +1594,36 @@ const remapIllusionEvents = (
   };
 };
 
+// a swap reveals what a mon held BEFORE it, after its earlier events were already emitted (and cached):
+// resolve each event's item epoch against the whole history here, instead of in the cached events
+const resolveSwappedItems = (
+  events: HackmonsInferenceEvent[],
+  history: Map<string, (string | null)[]>,
+): HackmonsInferenceEvent[] => {
+  if (!history.size) {
+    return events;
+  }
+
+  const resolve = (
+    pokemonId: string,
+    snapshot: HackmonsInferencePokemonSnapshot,
+  ): HackmonsInferencePokemonSnapshot => {
+    const item = history.get(pokemonId)?.[snapshot?.itemEpoch || 0];
+
+    return item === undefined ? snapshot : { ...snapshot, heldItem: item };
+  };
+
+  return events.map((event) => (
+    history.has(event.attackerId) || history.has(event.defenderId)
+      ? {
+        ...event,
+        attackerSnapshot: resolve(event.attackerId, event.attackerSnapshot),
+        defenderSnapshot: resolve(event.defenderId, event.defenderSnapshot),
+      }
+      : event
+  ));
+};
+
 export const parseHackmonsInferenceEvents = (
   stepQueue: string[],
   battleId?: string,
@@ -1629,7 +1715,7 @@ export const parseHackmonsInferenceEvents = (
   );
 
   return {
-    events: remapped.events,
+    events: resolveSwappedItems(remapped.events, runningState.itemHistoryState),
     ignoredEventCount: closedIgnoredCount + openIgnoredCount + remapped.ignoredEventCount,
   };
 };
