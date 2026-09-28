@@ -225,6 +225,7 @@ const clonePokemonSnapshot = (
   itemConfirmed: !!snapshot?.itemConfirmed,
   revealedItem: snapshot?.revealedItem || null,
   roosted: !!snapshot?.roosted,
+  grounded: !!snapshot?.grounded,
   itemLost: !!snapshot?.itemLost,
   consumedItem: snapshot?.consumedItem || undefined,
   boostedStat: snapshot?.boostedStat || null,
@@ -890,6 +891,19 @@ const processChunk = (
 
       if (type === '-end' && ['futuresight', 'doomdesire'].includes(effectId(parts[3]))) {
         delayedHitTargetId = parsePokemonToken(parts[2]).id || null;
+
+        return;
+      }
+
+      if (type === '-start' && ['smackdown', 'ingrain'].includes(effectId(parts[3]))) {
+        const pokemon = parsePokemonToken(parts[2]);
+
+        if (pokemon.id) {
+          pokemonState.set(pokemon.id, {
+            ...clonePokemonSnapshot(pokemonState.get(pokemon.id)),
+            grounded: true,
+          });
+        }
 
         return;
       }

@@ -573,6 +573,8 @@ if (MODE === 'forward') {
     scenario('thousand-arrows', twice({ base: { moveName: 'Thousand Arrows', target: 'Tornadus' } })),
     scenario('gravity-earthquake', twice({ base: { moveName: 'Earthquake', target: 'Tornadus' }, extra: { field: { isGravity: true } } })),
     scenario('roost-earthquake', twice({ base: { moveName: 'Earthquake', target: 'Tornadus' }, extra: { defenderSnapshot: { roosted: true } } })),
+    // Smack Down (or Thousand Arrows' Smack Down, or Ingrain) grounded Tornadus: Earthquake lands neutral
+    scenario('smackdown-earthquake', twice({ base: { moveName: 'Earthquake', target: 'Tornadus' }, extra: { defenderSnapshot: { grounded: true } } })),
     // Tera Shell forced this Body Slam "not very effective" into Water Vaporeon (neutral by type).
     // Regression guard only: the damage fit already rejected the -ate classes here before the fix
     scenario('tera-shell', twice({ base: { moveName: 'Body Slam', effectiveness: 'resisted' }, extra: { defenderSnapshot: { teraShell: true } } })),

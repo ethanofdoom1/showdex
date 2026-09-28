@@ -1317,6 +1317,33 @@ interface EventCalcBase {
 
 const EventCalcBaseMemo = new WeakMap<CalcdexBattleState, Map<string, EventCalcBase>>();
 
+// Smack Down (Thousand Arrows') or Ingrain grounded the defender, so a Ground move hits its other type as
+// the sim does -- the calc only lifts the Flying immunity itself for Gravity, Iron Ball & Thousand
+// Arrows. Its calc copy drops Flying (a pure Flying mon is left Normal, which Ground hits neutrally) and
+// Levitate, whose only damage effect is that same immunity
+const applyEventGrounding = (
+  state: CalcdexBattleState,
+  event: HackmonsInferenceEvent,
+  context: DamageEventContext,
+  defender: CalcdexPokemon,
+): CalcdexPokemon => {
+  const moveId = formatId(context.moveName);
+  const moveType = getGenDexForFormat(state.format)?.moves.get(moveId as never)?.type;
+
+  if (!event.defenderSnapshot?.grounded || moveType !== 'Ground' || moveId === 'thousandarrows') {
+    return defender;
+  }
+
+  const types = (defender.types || []).filter((type) => type !== 'Flying');
+  const levitating = ['levitate', 'eelevate'].includes(formatId(defender.ability));
+
+  return {
+    ...defender,
+    types: types.length ? types : ['Normal'] as Showdown.TypeName[],
+    ...(levitating ? { ability: NeutralAbility } : null),
+  };
+};
+
 // everything in an event's calc that doesn't depend on the candidate spread being tried: identical for
 // every candidate (and pass, and centring step) the search throws at the context, so built once per sync.
 // Keyed by the context id -- the same signature that guarantees the cached rolls -- and the hypothesis.
@@ -1394,7 +1421,12 @@ const eventCalcBase = (
   // the persistent roll cache never survived a turn: the live value is part of the context
   // signature, so every past event re-keyed (and re-calculated) on every sync
   const attackerWithFaints = applyEventFaintCount(attackerSide, event.attackerFaintCount);
-  const defenderWithFaints = applyEventFaintCount(defenderSide, event.defenderFaintCount);
+  const defenderWithFaints = applyEventGrounding(
+    state,
+    event,
+    context,
+    applyEventFaintCount(defenderSide, event.defenderFaintCount),
+  );
   const allPlayers = ['p1', 'p2', 'p3', 'p4']
     .filter((k: CalcdexPlayerKey) => state[k]?.active)
     .map((k: CalcdexPlayerKey) => state[k]);

@@ -164,6 +164,12 @@ export interface HackmonsInferencePokemonSnapshot {
   roosted?: boolean;
 
   /**
+   * Whether Smack Down (Thousand Arrows included) or Ingrain had grounded this Pokemon, which lifts a
+   * Flying type's Ground immunity until it switches out.
+   */
+  grounded?: boolean;
+
+  /**
    * Whether this Pokemon had lost its item (`-enditem`: consumed, Knocked Off, popped, ...) as of this
    * event. Until then, an item it has since lost (Showdown keeps it as `prevItem`) was still held.
    */

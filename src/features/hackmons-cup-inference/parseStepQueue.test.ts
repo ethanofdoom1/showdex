@@ -383,6 +383,23 @@ describe('parseHackmonsInferenceEvents()', () => {
     ]);
   });
 
+  it('keeps a Smack Down grounding until the grounded mon switches out', () => {
+    const { events } = parseHackmonsInferenceEvents([
+      '|switch|p1a: Tornadus|Tornadus, L50|100/100',
+      '|switch|p2a: Garchomp|Garchomp, L50|100/100',
+      '|turn|1',
+      '|move|p2a: Garchomp|Smack Down|p1a: Tornadus', '|-damage|p1a: Tornadus|85/100', '|-start|p1a: Tornadus|Smack Down',
+      '|turn|2',
+      '|move|p2a: Garchomp|Earthquake|p1a: Tornadus', '|-damage|p1a: Tornadus|50/100',
+      '|turn|3',
+      '|switch|p1a: Tornadus|Tornadus, L50|50/100',
+      '|move|p2a: Garchomp|Stone Edge|p1a: Tornadus', '|-supereffective|p1a: Tornadus', '|-damage|p1a: Tornadus|20/100',
+    ], 'smack-down');
+
+    expect(events.filter((event) => event.eventType !== 'speed').map((event) => [event.moveName, !!event.defenderSnapshot?.grounded]))
+      .toEqual([['Smack Down', false], ['Earthquake', true], ['Stone Edge', false]]);
+  });
+
   it('attributes a multi-hit move\'s crit to the hit it actually landed on', () => {
     const { events } = parseHackmonsInferenceEvents([
       '|switch|p1a: Weavile|Weavile, L50|100/100',
