@@ -103,6 +103,36 @@ describe('parseHackmonsInferenceEvents()', () => {
     ]);
   });
 
+  it('keeps the status a switch-in line carries, and clears one it no longer shows', () => {
+    const { events } = parseHackmonsInferenceEvents([
+      '|switch|p1a: Skarmory|Skarmory, L50|100/100',
+      '|switch|p2a: Garchomp|Garchomp, L50|100/100',
+      '|turn|1',
+      '|move|p1a: Skarmory|Will-O-Wisp|p2a: Garchomp',
+      '|-status|p2a: Garchomp|brn',
+      '|turn|2',
+      '|switch|p2a: Blissey|Blissey, L50|100/100',
+      '|turn|3',
+      '|switch|p2a: Garchomp|Garchomp, L50|94/100 brn',
+      '|turn|4',
+      '|move|p2a: Garchomp|Fire Fang|p1a: Skarmory',
+      '|-supereffective|p1a: Skarmory',
+      '|-damage|p1a: Skarmory|80/100',
+      '|turn|5',
+      '|switch|p2a: Blissey|Blissey, L50|100/100',
+      '|turn|6',
+      '|switch|p2a: Garchomp|Garchomp, L50|88/100',
+      '|turn|7',
+      '|move|p2a: Garchomp|Fire Fang|p1a: Skarmory',
+      '|-supereffective|p1a: Skarmory',
+      '|-damage|p1a: Skarmory|50/100',
+    ], 'switch-status');
+
+    const damageEvents = events.filter((event) => event.eventType !== 'speed');
+
+    expect(damageEvents.map((event) => event.attackerStatus)).toEqual(['brn', '']);
+  });
+
   it('keeps moves run outside their own turn slot out of the speed order', () => {
     const head = ['|switch|p1a: Vaporeon|Vaporeon, L50|100/100', '|switch|p2a: Mew|Mew, L50|100/100', '|turn|1'];
     const speedPairs = (lines: string[]) => parseHackmonsInferenceEvents([...head, ...lines], `order-${lines.length}`)

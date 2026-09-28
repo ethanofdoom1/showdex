@@ -683,7 +683,14 @@ const processChunk = (
           }
 
           clearBoosts(boostState, pokemon.id);
-          statusState.delete(pokemon.id);
+          // status persists across switches; the switch line's condition (`246/357 brn`) carries it
+          const status = formatId((parts[4] || '').split(' ')[1] || '') as Showdown.PokemonStatus | '';
+
+          if (status) {
+            statusState.set(pokemon.id, status);
+          } else {
+            statusState.delete(pokemon.id);
+          }
           moveRepeatState.delete(pokemon.id);
           // the sim's clearVolatile() on switch-in resets both move results
           moveResultState.delete(pokemon.id);
