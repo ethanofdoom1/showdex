@@ -604,7 +604,7 @@ if (MODE === 'forward') {
     attackerName: (faster === 'Mew' ? 'p2: ' : 'p1: ') + faster, defenderName: (slower === 'Mew' ? 'p2: ' : 'p1: ') + slower,
     moveName: fasterMove, slowerMoveName: slowerMove, field, rawLine: '|move|',
   });
-  const speState = (suffix, vaporeonAbility) => {
+  const speState = (suffix, vaporeonAbility, deoxysItem) => {
     const state = createState(suffix);
 
     return {
@@ -615,6 +615,7 @@ if (MODE === 'forward') {
         pokemon: state.p1.pokemon.map((mon) => ({
           ...mon,
           ability: mon.speciesForme === 'Vaporeon' && vaporeonAbility ? vaporeonAbility : mon.ability,
+          item: mon.speciesForme === 'Deoxys-Attack' && deoxysItem ? deoxysItem : mon.item,
           serverStats: calcPokemonSpreadStats(state.format, mon),
         })),
       },
@@ -647,6 +648,14 @@ if (MODE === 'forward') {
     { ...orderEvent({ id: 'q1', faster: 'Mew', fasterMove: 'Body Slam', slower: 'Deoxys-Attack', slowerMove: 'Psycho Boost' }), attackerSnapshot: { boostedStat: 'spe' } },
   ]);
   results.push({ ...quarkDrive, ok: !quarkDrive.modifiers.length && quarkDrive.speStat > 224 });
+
+  // our Deoxys-Attack (336 Spe) holds Lagging Tail, so it moved after Mew whatever the Speeds: the order
+  // proves nothing (read as Speed, Mew outsped 336 -- unreachable -- and Choice Scarf was proposed)
+  const laggingTail = summarize('our-lagging-tail', speState('laggingtail', null, 'Lagging Tail'), [
+    bodySlam,
+    orderEvent({ id: 'l1', faster: 'Mew', fasterMove: 'Body Slam', slower: 'Deoxys-Attack', slowerMove: 'Psycho Boost' }),
+  ]);
+  results.push({ ...laggingTail, ok: !laggingTail.modifiers.length });
 
   // our Swift Swim Vaporeon (166 Spe) is 332 in rain: moving first caps Mew at <= 331, not <= 165
   const swiftSwim = summarize('our-swift-swim-in-rain', speState('swiftswim', 'Swift Swim'), [

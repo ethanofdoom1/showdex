@@ -2137,6 +2137,29 @@ const eventMovePriority = (
     + (triage && ability === 'triage' ? 3 : 0);
 };
 
+// Stall, Lagging Tail & Full Incense (and Mycelium Might, for Status moves) make their holder act last in
+// its priority bracket, whatever its Speed -- knowable only for our own side or a revealed item/ability
+const movesLastInBracket = (
+  state: CalcdexBattleState,
+  event: HackmonsInferenceEvent,
+  side: 'faster' | 'slower',
+): boolean => {
+  const playerKey = side === 'faster' ? event.attackerKey : event.defenderKey;
+  const snapshot = side === 'faster' ? event.attackerSnapshot : event.defenderSnapshot;
+  const pokemon = side === 'faster'
+    ? findPokemonByLogName(state, event.attackerName, event.attackerKey, event.attackerId)?.pokemon
+    : findPokemonByLogName(state, event.defenderName, event.defenderKey, event.defenderId)?.pokemon;
+  const ours = playerKey === state.authPlayerKey;
+  const ability = ours || snapshot?.abilityConfirmed ? formatId(pokemon?.ability) : null;
+  const item = ours ? formatId(pokemon?.item) : snapshot?.itemConfirmed && !snapshot.itemLost ? snapshot.revealedItem : null;
+  const moveName = side === 'faster' ? event.moveName : event.slowerMoveName;
+  const status = (getGenDexForFormat(state.format)?.moves.get(formatId(moveName) as never) as { category?: string; })?.category === 'Status';
+
+  return ability === 'stall'
+    || (ability === 'myceliummight' && status)
+    || ['laggingtail', 'fullincense'].includes(item);
+};
+
 // T3 guard (audit finding, §12): a speed-order event only reflects raw Speed if BOTH moves shared the
 // same priority bracket -- flushSpeedOrderEvents() (parseStepQueue.ts) builds a 'speed' event between
 // every adjacent differing-attacker pair in a turn's move order with no priority filter at all, so a
@@ -2152,7 +2175,11 @@ const eventHasPriorityMismatch = (
   const fasterPriority = eventMovePriority(state, event, 'faster');
   const slowerPriority = eventMovePriority(state, event, 'slower');
 
-  return fasterPriority === null || slowerPriority === null || fasterPriority !== slowerPriority;
+  return fasterPriority === null
+    || slowerPriority === null
+    || fasterPriority !== slowerPriority
+    || movesLastInBracket(state, event, 'faster')
+    || movesLastInBracket(state, event, 'slower');
 };
 
 // Speed effects the log itself shows at the time, whoever's they are: a Protosynthesis/Quark Drive Speed
