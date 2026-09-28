@@ -1266,6 +1266,121 @@ const eventObservationKey = (
   event.maxHp === 100 ? `${event.startHp ?? 0}/${candidateSpreadStats?.hp ?? ''}` : '',
 ].join(':');
 
+interface EventCalcBase {
+  // the candidate's side of the event, everything but its spread-dependent fields
+  candidate: CalcdexPokemon;
+  // the other participant, complete with its event-time HP and faint count
+  other: CalcdexPokemon;
+  field: ReturnType<typeof createSmogonField>;
+}
+
+const EventCalcBaseMemo = new WeakMap<CalcdexBattleState, Map<string, EventCalcBase>>();
+
+// everything in an event's calc that doesn't depend on the candidate spread being tried: identical for
+// every candidate (and pass, and centring step) the search throws at the context, so built once per sync.
+// Keyed by the context id -- the same signature that guarantees the cached rolls -- and the hypothesis.
+const eventCalcBase = (
+  state: CalcdexBattleState,
+  event: HackmonsInferenceEvent,
+  candidatePokemon: CalcdexPokemon,
+  context: DamageEventContext,
+  modifierOverride?: ModifierOverride,
+): EventCalcBase => {
+  let memo = EventCalcBaseMemo.get(state);
+
+  if (!memo) {
+    memo = new Map();
+    EventCalcBaseMemo.set(state, memo);
+  }
+
+  const key = `${context.id}:${context.relation}:${modifierOverride?.id || 'none'}`;
+  const cached = memo.get(key);
+
+  if (cached) {
+    return cached;
+  }
+
+  const {
+    attackerMatch,
+    defenderMatch,
+    relation,
+    eventField,
+  } = context;
+
+  const attackerPlayer = state[attackerMatch.playerKey];
+  const defenderPlayer = state[defenderMatch.playerKey];
+  const attackerSide: CalcdexPokemon = relation === 'attacker' ? {
+    ...applyInferencePokemonAssumptions(applyEventPokemonSnapshot(
+      state.format,
+      candidatePokemon,
+      event.attackerSnapshot,
+    ), !event.attackerSnapshot?.abilityConfirmed, modifierOverride),
+    boosts: cloneBoostSnapshot(event.attackerBoosts),
+    status: event.attackerStatus ?? candidatePokemon.status,
+    // Rage Fist's base power depends on how many times the attacker has been hit prior to this
+    // move; the live/candidate hitCounter reflects the current battle state, not this historical
+    // event, so it must come from the event itself
+    hitCounter: event.attackerHitCounter || 0,
+    // same idea for Fury Cutter/Rollout's consecutive-use power scaling & Rollout's Defense Curl combo
+    moveRepeatCount: event.attackerMoveRepeatCount || 0,
+    defenseCurled: !!event.attackerDefenseCurled,
+    useMax: !!event.attackerDynamaxed,
+  } : applyInferencePokemonAssumptions(applyEventPokemonSnapshot(state.format, {
+    ...attackerMatch.pokemon,
+    boosts: cloneBoostSnapshot(event.attackerBoosts),
+    status: event.attackerStatus ?? attackerMatch.pokemon.status,
+    hitCounter: event.attackerHitCounter || 0,
+    moveRepeatCount: event.attackerMoveRepeatCount || 0,
+    defenseCurled: !!event.attackerDefenseCurled,
+    useMax: !!event.attackerDynamaxed,
+  }, event.attackerSnapshot));
+  const defenderSide: CalcdexPokemon = relation === 'defender' ? {
+    ...applyInferencePokemonAssumptions(applyEventPokemonSnapshot(
+      state.format,
+      candidatePokemon,
+      event.defenderSnapshot,
+    ), !event.defenderSnapshot?.abilityConfirmed, modifierOverride),
+    boosts: cloneBoostSnapshot(event.defenderBoosts),
+    status: event.defenderStatus ?? candidatePokemon.status,
+  } : applyInferencePokemonAssumptions(applyEventPokemonSnapshot(state.format, {
+    ...defenderMatch.pokemon,
+    boosts: cloneBoostSnapshot(event.defenderBoosts),
+    status: event.defenderStatus ?? defenderMatch.pokemon.status,
+  }, event.defenderSnapshot));
+
+  // the defender's HP was previously left at whatever it is RIGHT NOW, several turns after this
+  // event -- wrong for anything that reads it (Multiscale, Crush Grip, Super Fang), and the reason
+  // the persistent roll cache never survived a turn: the live value is part of the context
+  // signature, so every past event re-keyed (and re-calculated) on every sync
+  const attackerWithFaints = applyEventFaintCount(attackerSide, event.attackerFaintCount);
+  const defenderWithFaints = applyEventFaintCount(defenderSide, event.defenderFaintCount);
+  const allPlayers = ['p1', 'p2', 'p3', 'p4']
+    .filter((k: CalcdexPlayerKey) => state[k]?.active)
+    .map((k: CalcdexPlayerKey) => state[k]);
+
+  const field = createSmogonField(
+    state.format,
+    state.gameType,
+    eventField,
+    applyEventPlayerSide(attackerPlayer, event.attackerSide),
+    applyEventPlayerSide(defenderPlayer, event.defenderSide),
+    allPlayers,
+  );
+
+  // the hit landed, so a Normal/Fighting move that hit a Ghost had its immunity lifted (Scrappy,
+  // Mind's Eye, Foresight, Odor Sleuth) -- which is exactly, and only, what the calc's isForesight
+  // does. (calculate() clones the field, so sharing this one across calls is safe.)
+  field.defenderSide.isForesight = true;
+
+  const built: EventCalcBase = relation === 'attacker'
+    ? { candidate: attackerWithFaints, other: applyEventHp(defenderWithFaints, event.startHp, event.maxHp), field }
+    : { candidate: defenderWithFaints, other: applyEventHp(attackerWithFaints, event.attackerStartHp, event.attackerMaxHp), field };
+
+  memo.set(key, built);
+
+  return built;
+};
+
 const evaluateCandidateEvent = (
   state: CalcdexBattleState,
   event: HackmonsInferenceEvent,
@@ -1325,87 +1440,25 @@ const evaluateCandidateEvent = (
   let rawRolls = cachedRolls?.rawRolls;
 
   if (!rolls?.length) {
-    const attackerPlayer = state[attackerMatch.playerKey];
-    const defenderPlayer = state[defenderMatch.playerKey];
-    const attackerCandidate: CalcdexPokemon = relation === 'attacker' ? {
-      ...applyInferencePokemonAssumptions(applyEventPokemonSnapshot(
-        state.format,
-        candidatePokemon,
-        event.attackerSnapshot,
-      ), !event.attackerSnapshot?.abilityConfirmed, modifierOverride),
-      nature,
-      ivs,
-      evs,
-      boosts: cloneBoostSnapshot(event.attackerBoosts),
-      status: event.attackerStatus ?? candidatePokemon.status,
-      spreadStats: candidateSpreadStats,
-      // Rage Fist's base power depends on how many times the attacker has been hit prior to this
-      // move; the live/candidate hitCounter reflects the current battle state, not this historical
-      // event, so it must come from the event itself
-      hitCounter: event.attackerHitCounter || 0,
-      // same idea for Fury Cutter/Rollout's consecutive-use power scaling & Rollout's Defense Curl combo
-      moveRepeatCount: event.attackerMoveRepeatCount || 0,
-      defenseCurled: !!event.attackerDefenseCurled,
-      useMax: !!event.attackerDynamaxed,
-    } : applyInferencePokemonAssumptions(applyEventPokemonSnapshot(state.format, {
-      ...attackerMatch.pokemon,
-      boosts: cloneBoostSnapshot(event.attackerBoosts),
-      status: event.attackerStatus ?? attackerMatch.pokemon.status,
-      hitCounter: event.attackerHitCounter || 0,
-      moveRepeatCount: event.attackerMoveRepeatCount || 0,
-      defenseCurled: !!event.attackerDefenseCurled,
-      useMax: !!event.attackerDynamaxed,
-    }, event.attackerSnapshot));
-    const defenderCandidate: CalcdexPokemon = relation === 'defender' ? {
-      ...applyInferencePokemonAssumptions(applyEventPokemonSnapshot(
-        state.format,
-        candidatePokemon,
-        event.defenderSnapshot,
-      ), !event.defenderSnapshot?.abilityConfirmed, modifierOverride),
-      nature,
-      ivs,
-      evs,
-      boosts: cloneBoostSnapshot(event.defenderBoosts),
-      status: event.defenderStatus ?? candidatePokemon.status,
-      spreadStats: candidateSpreadStats,
-    } : applyInferencePokemonAssumptions(applyEventPokemonSnapshot(state.format, {
-      ...defenderMatch.pokemon,
-      boosts: cloneBoostSnapshot(event.defenderBoosts),
-      status: event.defenderStatus ?? defenderMatch.pokemon.status,
-    }, event.defenderSnapshot));
-    const attackerWithEventHp = applyEventHp(
-      applyEventFaintCount(attackerCandidate, event.attackerFaintCount),
-      event.attackerStartHp,
-      event.attackerMaxHp,
+    const base = eventCalcBase(state, event, candidatePokemon, context, modifierOverride);
+    // the one part that changes between candidates: their spread (and the HP it scales to)
+    const candidateWithEventHp = applyEventHp(
+      {
+        ...base.candidate,
+        nature,
+        ivs,
+        evs,
+        spreadStats: candidateSpreadStats,
+      },
+      relation === 'attacker' ? event.attackerStartHp : event.startHp,
+      relation === 'attacker' ? event.attackerMaxHp : event.maxHp,
     );
-    // the defender's HP was previously left at whatever it is RIGHT NOW, several turns after this
-    // event -- wrong for anything that reads it (Multiscale, Crush Grip, Super Fang), and the reason
-    // the persistent roll cache never survived a turn: the live value is part of the context
-    // signature, so every past event re-keyed (and re-calculated) on every sync
-    const defenderWithEventHp = applyEventHp(
-      applyEventFaintCount(defenderCandidate, event.defenderFaintCount),
-      event.startHp,
-      event.maxHp,
-    );
+    const attackerWithEventHp = relation === 'attacker' ? candidateWithEventHp : base.other;
+    const defenderWithEventHp = relation === 'defender' ? candidateWithEventHp : base.other;
+    const defenderCandidate = defenderWithEventHp;
+    const { field } = base;
 
     try {
-      const allPlayers = ['p1', 'p2', 'p3', 'p4']
-        .filter((k: CalcdexPlayerKey) => state[k]?.active)
-        .map((k: CalcdexPlayerKey) => state[k]);
-
-      const field = createSmogonField(
-        state.format,
-        state.gameType,
-        eventField,
-        applyEventPlayerSide(attackerPlayer, event.attackerSide),
-        applyEventPlayerSide(defenderPlayer, event.defenderSide),
-        allPlayers,
-      );
-
-      // the hit landed, so a Normal/Fighting move that hit a Ghost had its immunity lifted (Scrappy,
-      // Mind's Eye, Foresight, Odor Sleuth) -- which is exactly, and only, what the calc's isForesight does
-      field.defenderSide.isForesight = true;
-
       const attacker = createSmogonPokemon(
         state.format,
         state.gameType,
@@ -2212,8 +2265,14 @@ const spreadStatsFor = (
   let stats = memo.get(key);
 
   if (!stats) {
+    // exactly the fields calcPokemonSpreadStats() reads -- spreading the whole mon here was most of its cost
     stats = calcPokemonSpreadStats(format, {
-      ...pokemon,
+      baseStats: pokemon.baseStats,
+      dirtyBaseStats: pokemon.dirtyBaseStats,
+      transformedForme: pokemon.transformedForme,
+      transformedBaseStats: pokemon.transformedBaseStats,
+      transformedLevel: pokemon.transformedLevel,
+      level: pokemon.level,
       nature,
       ivs,
       evs,
