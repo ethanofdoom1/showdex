@@ -83,6 +83,30 @@ type RollCache = Map<string, CachedDamageRolls>;
 const RollCacheStore = new Map<string, RollCache>();
 const MaxRollCacheEntriesPerMon = 20_000;
 
+// a roll-cache hit moves its entry to the back of the Map's insertion order, so trimRollCache() evicts the
+// least RECENTLY used entries -- the ones the search has stopped visiting -- instead of the oldest ones
+const touchRollEntry = (
+  rollCache: RollCache,
+  rollKey: string,
+  entry: CachedDamageRolls,
+): void => {
+  rollCache.delete(rollKey);
+  rollCache.set(rollKey, entry);
+};
+
+// run once a mon's whole search is done: trimming DURING it (as this used to, first-in-first-out on
+// every insert) evicted entries that same search was about to need again once a long battle's working
+// set outgrew the cap, and every one of those came back as a fresh calc -- 98% of a late sync's misses
+const trimRollCache = (
+  rollCache: RollCache,
+): void => {
+  const keys = rollCache.keys();
+
+  while (rollCache.size > MaxRollCacheEntriesPerMon) {
+    rollCache.delete(keys.next().value);
+  }
+};
+
 const l = logger('@showdex/features/hackmons-cup-inference/inferHackmonsSpread()');
 const lSearchCandidates = logger('@showdex/features/hackmons-cup-inference/inferHackmonsSpread():searchBestCandidates()');
 const lSearchModifiers = logger('@showdex/features/hackmons-cup-inference/inferHackmonsSpread():searchModifierHypotheses()');
@@ -1441,6 +1465,10 @@ const evaluateCandidateEvent = (
   let rolls = cachedRolls?.rolls;
   let rawRolls = cachedRolls?.rawRolls;
 
+  if (cachedRolls && rolls?.length) {
+    touchRollEntry(rollCache, rollKey, cachedRolls);
+  }
+
   if (!rolls?.length) {
     const base = eventCalcBase(state, event, candidatePokemon, context, modifierOverride);
     // the one part that changes between candidates: their spread (and the HP it scales to)
@@ -1621,13 +1649,8 @@ const evaluateCandidateEvent = (
       return emptyMatch(`empty rolls for ${event.moveName}`);
     }
 
+    // bounded per mon by trimRollCache() once its search completes
     rollCache?.set(rollKey, { rolls, rawRolls });
-
-    // now-persistent across syncs (perf audit remedy #4) -- bound an individual mon's growth over a
-    // very long battle the same way RollCacheStore bounds the number of mons tracked
-    if (rollCache && rollCache.size > MaxRollCacheEntriesPerMon) {
-      rollCache.delete(rollCache.keys().next().value);
-    }
   }
 
   const percentPmf = event.maxHp === 100
@@ -2357,9 +2380,12 @@ const scoreCandidateEvent = (
     ? eventRollKey(context, candidateSpreadStats, modifierOverride)
     : null;
   const observationKey = rollKey ? eventObservationKey(state, event, candidateSpreadStats) : null;
-  const cached = rollKey ? rollCache?.get(rollKey)?.terms?.get(observationKey) : null;
+  const cachedEntry = rollKey ? rollCache?.get(rollKey) : null;
+  const cached = cachedEntry?.terms?.get(observationKey);
 
   if (cached) {
+    touchRollEntry(rollCache, rollKey, cachedEntry);
+
     return cached;
   }
 
@@ -4409,6 +4435,8 @@ export const inferHackmonsSpread = (
         inferredModifiers,
       } : null,
     };
+
+    trimRollCache(rollCache);
 
     output[calcdexId] = monInference;
 

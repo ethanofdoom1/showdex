@@ -31,6 +31,7 @@ const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'showdex-replay-profi
 const entryPath = path.join(tempDirectory, 'entry.mjs');
 const battleShimPath = path.join(tempDirectory, 'battle-shim.mjs');
 const calcShimPath = path.join(tempDirectory, 'calc-shim.mjs');
+const smogonShimPath = path.join(tempDirectory, 'smogon-calc-shim.mjs');
 const outputPath = path.join(tempDirectory, 'bundle.cjs');
 const logPath = path.join(tempDirectory, 'battle.json');
 
@@ -239,6 +240,7 @@ const sync = (upTo, turn) => {
   const t0 = performance.now();
   const parsed = parseHackmonsInferenceEvents(stepQueue, state.battleId);
   const t1 = performance.now();
+  const callsBefore = globalThis.__calcCalls || 0;
   const output = inferHackmonsSpread(state, parsed.events, parsed.ignoredEventCount);
   const t2 = performance.now();
 
@@ -247,6 +249,8 @@ const sync = (upTo, turn) => {
     lines: upTo,
     events: parsed.events.length,
     newEvents: parsed.events.length - lastEventCount,
+    // @smogon/calc calculate() calls: the machine-independent cost of this sync
+    calcCalls: (globalThis.__calcCalls || 0) - callsBefore,
     parseMs: +(t1 - t0).toFixed(2),
     inferMs: +(t2 - t1).toFixed(2),
     mons: Object.keys(output).length,
@@ -282,6 +286,7 @@ process.stdout.write(JSON.stringify({
   turns: turn,
   syncCount: syncs.length,
   finalEvents: lastEventCount,
+  calcCalls: syncs.reduce((sum, s) => sum + s.calcCalls, 0),
   inferMs: { total: total('inferMs'), median: pct('inferMs', 0.5), p95: pct('inferMs', 0.95), max: sorted('inferMs').at(-1) },
   parseMs: { total: total('parseMs'), median: pct('parseMs', 0.5), max: sorted('parseMs').at(-1) },
   syncs,
@@ -306,6 +311,12 @@ const compile = (config) => new Promise((resolve, reject) => {
 
 try {
   await writeFile(entryPath, entrySource);
+  // counts every @smogon/calc calculate() the bundle makes; the explicit export wins over `export *`
+  await writeFile(smogonShimPath, [
+    "import { calculate as realCalculate } from '" + path.join(repoRoot, 'node_modules/@smogon/calc/dist/index.js') + "';",
+    "export * from '" + path.join(repoRoot, 'node_modules/@smogon/calc/dist/index.js') + "';",
+    'export const calculate = (...args) => { globalThis.__calcCalls = (globalThis.__calcCalls || 0) + 1; return realCalculate(...args); };',
+  ].join('\n'));
   await writeFile(calcShimPath, [
     "export { calcPokemonSpreadStats } from '" + path.join(repoRoot, 'src/utils/calc/calcPokemonSpreadStats.ts') + "';",
     "export { createSmogonField } from '" + path.join(repoRoot, 'src/utils/calc/createSmogonField.ts') + "';",
@@ -325,6 +336,7 @@ try {
     output: { path: tempDirectory, filename: path.basename(outputPath) },
     resolve: {
       alias: {
+        '@smogon/calc$': smogonShimPath,
         '@showdex/utils/battle$': battleShimPath,
         '@showdex/utils/calc$': calcShimPath,
         '@showdex': path.join(repoRoot, 'src'),
