@@ -22,7 +22,7 @@ import webpack from 'webpack';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const simRoot = path.resolve(repoRoot, '..', 'pokemon-showdown');
+const simRoot = process.env.SIM_ROOT || path.resolve(repoRoot, '..', 'pokemon-showdown');
 const seed = (process.env.SEED || '1,2,3,4').split(',').map(Number);
 const syncMode = process.env.SYNCS || 'turn';
 const profile = process.env.PROFILE === '1';

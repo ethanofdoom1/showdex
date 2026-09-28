@@ -2241,7 +2241,47 @@ interface DamageEventGroup {
   event: HackmonsInferenceEvent;
   context: DamageEventContext;
   count: number;
+
+  // this search's own terms for the group, keyed by groupTermKey() (see scoreCandidate())
+  termStats?: Showdown.StatName[];
+  terms?: Map<number, CandidateEventTerm>;
 }
+
+// within one search a group's context, hypothesis & observation are fixed, so its term varies only with
+// the candidate stats the calc reads (plus the candidate's HP on the percent-HP path, see
+// eventObservationKey()) -- packed 12 bits apiece into one safe integer, so a repeat lookup builds no
+// strings. null when they don't fit (more than 4 stats, or a stat past 4094), which falls through to
+// the string-keyed path
+const groupTermKey = (
+  group: DamageEventGroup,
+  candidateSpreadStats: Partial<Showdown.StatsTable>,
+): number | null => {
+  if (!group.termStats) {
+    const relevantStats = group.context?.relevantStats || [];
+
+    group.termStats = group.event.maxHp === 100 && !relevantStats.includes('hp')
+      ? [...relevantStats, 'hp']
+      : [...relevantStats];
+  }
+
+  if (group.termStats.length > 4) {
+    return null;
+  }
+
+  let key = 0;
+
+  for (const stat of group.termStats) {
+    const value = (candidateSpreadStats?.[stat] ?? -1) + 1;
+
+    if (value < 0 || value > 4095) {
+      return null;
+    }
+
+    key = (key * 4096) + value;
+  }
+
+  return key;
+};
 
 interface CandidateScore {
   score: number;
@@ -2398,19 +2438,30 @@ const scoreCandidate = (
     score += speedEventLogLikelihood(margin, speedValues.candidateSpeed, speedValues.otherSpeed);
   });
 
-  damageGroups.forEach(({ event, context, count }) => {
-    const term = scoreCandidateEvent(
-      state,
-      event,
-      defender,
-      nature,
-      ivs,
-      evs,
-      candidateSpreadStats,
-      context,
-      rollCache,
-      modifierOverride,
-    );
+  damageGroups.forEach((group) => {
+    const { event, context, count } = group;
+    const localKey = groupTermKey(group, candidateSpreadStats);
+    let term = localKey === null ? null : group.terms?.get(localKey);
+
+    if (!term) {
+      term = scoreCandidateEvent(
+        state,
+        event,
+        defender,
+        nature,
+        ivs,
+        evs,
+        candidateSpreadStats,
+        context,
+        rollCache,
+        modifierOverride,
+      );
+
+      if (localKey !== null) {
+        group.terms = group.terms || new Map();
+        group.terms.set(localKey, term);
+      }
+    }
 
     if (term.rangeDistance > 0) {
       infeasible += count;
