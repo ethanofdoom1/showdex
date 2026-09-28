@@ -291,6 +291,57 @@ describe('parseHackmonsInferenceEvents()', () => {
     ]);
   });
 
+  it('records the move-failure, faint, stat-drop and Fusion history those moves double on', () => {
+    const doubled = (lines: string[], name: string) => parseHackmonsInferenceEvents([
+      '|switch|p1a: Groudon|Groudon, L50|100/100',
+      '|switch|p2a: Mew|Mew, L50|100/100',
+      ...lines,
+    ], name).events
+      .filter((event) => event.eventType !== 'speed')
+      .map((event) => [event.turn, event.moveName, event.powerDoubled]);
+
+    // Stomping Tantrum: last turn's move missed (doubled), then last turn's move landed (not)
+    expect(doubled([
+      '|turn|1',
+      '|move|p1a: Groudon|Precipice Blades|p2a: Mew|[miss]', '|-miss|p1a: Groudon|p2a: Mew',
+      '|turn|2',
+      '|move|p1a: Groudon|Stomping Tantrum|p2a: Mew', '|-damage|p2a: Mew|70/100',
+      '|turn|3',
+      '|move|p1a: Groudon|Stomping Tantrum|p2a: Mew', '|-damage|p2a: Mew|50/100',
+    ], 'stomping')).toEqual([[2, 'Stomping Tantrum', true], [3, 'Stomping Tantrum', false]]);
+
+    // full paralysis is a failure; recharging is not
+    expect(doubled([
+      '|turn|1', '|cant|p1a: Groudon|par',
+      '|turn|2', '|move|p1a: Groudon|Temper Flare|p2a: Mew', '|-damage|p2a: Mew|70/100',
+      '|turn|3', '|cant|p1a: Groudon|recharge',
+      '|turn|4', '|move|p1a: Groudon|Temper Flare|p2a: Mew', '|-damage|p2a: Mew|40/100',
+    ], 'cant')).toEqual([[2, 'Temper Flare', true], [4, 'Temper Flare', false]]);
+
+    // Retaliate: an ally fainted last turn (doubled); not two turns ago
+    expect(doubled([
+      '|turn|1', '|move|p2a: Mew|Body Slam|p1a: Groudon', '|-damage|p1a: Groudon|0 fnt', '|faint|p1a: Groudon',
+      '|switch|p1a: Tauros|Tauros, L50|100/100',
+      '|turn|2', '|move|p1a: Tauros|Retaliate|p2a: Mew', '|-damage|p2a: Mew|60/100',
+      '|turn|3', '|move|p1a: Tauros|Retaliate|p2a: Mew', '|-damage|p2a: Mew|20/100',
+    ], 'retaliate').filter(([, move]) => move === 'Retaliate')).toEqual([[2, 'Retaliate', true], [3, 'Retaliate', false]]);
+
+    // Lash Out: its stats were lowered earlier this turn
+    expect(doubled([
+      '|turn|1', '|move|p2a: Mew|Charm|p1a: Groudon', '|-unboost|p1a: Groudon|atk|2',
+      '|move|p1a: Groudon|Lash Out|p2a: Mew', '|-damage|p2a: Mew|70/100',
+      '|turn|2', '|move|p1a: Groudon|Lash Out|p2a: Mew', '|-damage|p2a: Mew|50/100',
+    ], 'lashout')).toEqual([[1, 'Lash Out', true], [2, 'Lash Out', false]]);
+
+    // Fusion Flare right after a successful Fusion Bolt, but not after a missed one
+    expect(doubled([
+      '|turn|1', '|move|p2a: Mew|Fusion Bolt|p1a: Groudon', '|-immune|p1a: Groudon',
+      '|move|p1a: Groudon|Fusion Flare|p2a: Mew', '|-damage|p2a: Mew|70/100',
+      '|turn|2', '|move|p2a: Mew|Fusion Bolt|p1a: Groudon', '|-damage|p1a: Groudon|80/100',
+      '|move|p1a: Groudon|Fusion Flare|p2a: Mew', '|-damage|p2a: Mew|30/100',
+    ], 'fusion').filter(([, move]) => move === 'Fusion Flare')).toEqual([[1, 'Fusion Flare', false], [2, 'Fusion Flare', true]]);
+  });
+
   it('attributes a multi-hit move\'s crit to the hit it actually landed on', () => {
     const { events } = parseHackmonsInferenceEvents([
       '|switch|p1a: Weavile|Weavile, L50|100/100',

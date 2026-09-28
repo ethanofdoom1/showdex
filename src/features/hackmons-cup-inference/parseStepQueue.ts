@@ -32,6 +32,12 @@ interface PendingMove {
    */
   orderForced?: boolean;
 
+  // the turn's history as the sim reads it when this move runs (see turnHistoryPowerDoubled())
+  lastTurnFailed?: boolean;
+  sideFaintedLastTurn?: boolean;
+  statsLoweredThisTurn?: boolean;
+  priorSuccessfulMoveId?: string;
+
   /**
    * Targets whose NEXT hit of this move crit -- Showdown logs `-crit` immediately before that hit's
    * own `-damage` line, so a multi-hit move that crits on only some of its hits is knowable here
@@ -110,6 +116,10 @@ interface TurnHistory {
   targetActed: boolean;
   targetSwitchedIn: boolean;
   targetSwitchingOut: boolean;
+  lastTurnFailed: boolean;
+  sideFaintedLastTurn: boolean;
+  statsLoweredThisTurn: boolean;
+  priorSuccessfulMoveId: string;
 }
 
 // the sim's basePowerCallback for each move that doubles on something earlier in the turn
@@ -126,6 +136,12 @@ const turnHistoryPowerDoubled = (
     case 'boltbeak':
     case 'fishiousrend': return turn.targetSwitchedIn || !turn.targetActed;
     case 'pursuit': return turn.targetSwitchingOut;
+    case 'stompingtantrum':
+    case 'temperflare': return turn.lastTurnFailed;
+    case 'retaliate': return turn.sideFaintedLastTurn;
+    case 'lashout': return turn.statsLoweredThisTurn;
+    case 'fusionflare': return turn.priorSuccessfulMoveId === 'fusionbolt';
+    case 'fusionbolt': return turn.priorSuccessfulMoveId === 'fusionflare';
     default: return undefined;
   }
 };
@@ -282,6 +298,12 @@ interface ChunkMutableState {
   // running count of Pokemon fainted per player -- Supreme Overlord's "allies fainted"
   faintState: Map<CalcdexPlayerKey, number>;
   fieldState: HackmonsInferenceFieldSnapshot;
+  // each mon's move result this turn & last turn, as the sim's moveThisTurnResult/moveLastTurnResult
+  // (false = failed: missed, no effect, blocked, or couldn't move; null = had no option, e.g. recharge)
+  moveResultState: Map<string, { thisTurn?: boolean | null; lastTurn?: boolean | null; }>;
+  // players who had a mon faint this turn / last turn (Retaliate)
+  faintedThisTurnState: Set<CalcdexPlayerKey>;
+  faintedLastTurnState: Set<CalcdexPlayerKey>;
 }
 
 const createParserState = (): ChunkMutableState => ({
@@ -310,6 +332,9 @@ const createParserState = (): ChunkMutableState => ({
   tailwindState: new Set(),
   screenState: new Map(),
   faintState: new Map(),
+  moveResultState: new Map(),
+  faintedThisTurnState: new Set(),
+  faintedLastTurnState: new Set(),
   fieldState: {
     weather: null,
     terrain: null,
@@ -356,6 +381,9 @@ const cloneParserState = (
   screenState: new Map([...state.screenState].map(([key, screens]) => [key, new Set(screens)])),
   faintState: new Map(state.faintState),
   fieldState: cloneFieldSnapshot(state.fieldState),
+  moveResultState: new Map([...state.moveResultState].map(([id, entry]) => [id, { ...entry }])),
+  faintedThisTurnState: new Set(state.faintedThisTurnState),
+  faintedLastTurnState: new Set(state.faintedLastTurnState),
 });
 
 // processes a single turn-chunk against the running (mutable) parser state, returning just that
@@ -386,6 +414,9 @@ const processChunk = (
     screenState,
     faintState,
     fieldState,
+    moveResultState,
+    faintedThisTurnState,
+    faintedLastTurnState,
   } = state;
 
   const events: HackmonsInferenceEvent[] = [];
@@ -409,6 +440,19 @@ const processChunk = (
     // mons whose NEXT move hit is held at 1 HP -- Focus Sash/Sturdy/Endure/Focus Band are logged before
     // the -damage they cap
     const survivalCapIds = new Set<string>();
+    const statsLoweredIds = new Set<string>();
+    let lastSuccessfulMoveId: string = null;
+
+    // the running mover's result this turn turns false on any sign its move failed
+    const markLastMoveFailed = () => {
+      const lastMove = [...pendingMoves.values()].at(-1);
+
+      if (lastMove?.attackerId) {
+        moveResultState.set(lastMove.attackerId, { ...moveResultState.get(lastMove.attackerId), thisTurn: false });
+      }
+
+      lastSuccessfulMoveId = null;
+    };
 
     // an item used up by the hit that follows it: a resist berry (`[weaken]`, defender) or a Gem
     // (`[from] gem`, attacker)
@@ -566,7 +610,14 @@ const processChunk = (
           defenseCurled: defenseCurlState.has(attacker.id),
           attackerStint: (attacker.slot ? activeSlotStintState.get(attacker.slot) : null) || activeStintState.get(attacker.id) || 0,
           orderForced: orderForcedIds.has(attacker.id),
+          lastTurnFailed: moveResultState.get(attacker.id)?.lastTurn === false,
+          sideFaintedLastTurn: !!attacker.playerKey && faintedLastTurnState.has(attacker.playerKey),
+          statsLoweredThisTurn: statsLoweredIds.has(attacker.id),
+          priorSuccessfulMoveId: lastSuccessfulMoveId,
         });
+
+        moveResultState.set(attacker.id, { ...moveResultState.get(attacker.id), thisTurn: true });
+        lastSuccessfulMoveId = moveId;
         if (!outOfOrder) {
           moveOrder.push(pendingMoves.get(attacker.id));
           actedIds.add(attacker.id);
@@ -605,6 +656,8 @@ const processChunk = (
           clearBoosts(boostState, pokemon.id);
           statusState.delete(pokemon.id);
           moveRepeatState.delete(pokemon.id);
+          // the sim's clearVolatile() on switch-in resets both move results
+          moveResultState.delete(pokemon.id);
           defenseCurlState.delete(pokemon.id);
           dynamaxedState.delete(pokemon.id);
           activeStintState.set(pokemon.id, (activeStintState.get(pokemon.id) || 0) + 1);
@@ -711,6 +764,7 @@ const processChunk = (
 
         if (pokemon.playerKey) {
           faintState.set(pokemon.playerKey, (faintState.get(pokemon.playerKey) || 0) + 1);
+          faintedThisTurnState.add(pokemon.playerKey);
         }
 
         return;
@@ -746,9 +800,19 @@ const processChunk = (
 
         if (pokemon.id) {
           actedIds.add(pokemon.id);
+          // BeforeMove returning false (sleep, paralysis, flinch, no PP, ...) counts as a failed move;
+          // recharging returns null -- the mon had no option, which Stomping Tantrum doesn't count
+          moveResultState.set(pokemon.id, {
+            ...moveResultState.get(pokemon.id),
+            thisTurn: effectId(parts[3]) === 'recharge' ? null : false,
+          });
         }
 
         return;
+      }
+
+      if (type === '-fail' || (type === '-activate' && ['protect', 'maxguard'].includes(effectId(parts[3])))) {
+        markLastMoveFailed();
       }
 
       if (type === '-activate' && ['endure', 'focusband'].includes(effectId(parts[3]))) {
@@ -807,6 +871,18 @@ const processChunk = (
             pokemonState.set(pokemonId, { ...clonePokemonSnapshot(snapshot), roosted: false });
           }
         });
+
+        // the sim's nextTurn(): this turn's move results & faints become last turn's
+        if (type === 'turn') {
+          moveResultState.forEach((entry) => {
+            entry.lastTurn = entry.thisTurn;
+            entry.thisTurn = undefined;
+          });
+
+          faintedLastTurnState.clear();
+          faintedThisTurnState.forEach((playerKey) => faintedLastTurnState.add(playerKey));
+          faintedThisTurnState.clear();
+        }
 
         return;
       }
@@ -951,6 +1027,10 @@ const processChunk = (
 
         const boosts = getBoosts(boostState, pokemon.id);
 
+        if (type === '-unboost') {
+          statsLoweredIds.add(pokemon.id);
+        }
+
         if (type === '-setboost') {
           boosts[stat] = Math.max(-6, Math.min(6, amount));
         } else {
@@ -1069,6 +1149,7 @@ const processChunk = (
           moveRepeatState.delete(lastMove.attackerId);
         }
 
+        markLastMoveFailed();
         ignoredEventCount++;
         return;
       }
@@ -1268,6 +1349,10 @@ const processChunk = (
             targetActed: actedIds.has(defender.id),
             targetSwitchedIn: switchedInIds.has(defender.id),
             targetSwitchingOut: pursuitTargetIds.has(defender.id),
+            lastTurnFailed: !!pendingMove.lastTurnFailed,
+            sideFaintedLastTurn: !!pendingMove.sideFaintedLastTurn,
+            statsLoweredThisTurn: !!pendingMove.statsLoweredThisTurn,
+            priorSuccessfulMoveId: pendingMove.priorSuccessfulMoveId,
           }),
         });
       }
