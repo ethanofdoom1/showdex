@@ -2739,4 +2739,6 @@ try {
   }
 } finally {
   await Promise.all(contexts.map((context) => context.close().catch(() => null)));
+  // profiles are per run (runId), so without this every run left two Chrome profiles behind in .tmp
+  Object.values(profileDirs).forEach((dir) => fs.rmSync(dir, { recursive: true, force: true }));
 }

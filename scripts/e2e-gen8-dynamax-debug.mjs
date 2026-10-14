@@ -519,4 +519,5 @@ try {
   console.log(`Console/page errors -- B: ${JSON.stringify(errors.b)}`);
 } finally {
   await Promise.all(contexts.map((context) => context.close().catch(() => null)));
+  Object.values(profileDirs).forEach((dir) => fs.rmSync(dir, { recursive: true, force: true }));
 }

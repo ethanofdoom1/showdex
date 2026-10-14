@@ -516,4 +516,5 @@ try {
   console.log(JSON.stringify(finalSnapshot, null, 2));
 } finally {
   await Promise.all(contexts.map((context) => context.close().catch(() => null)));
+  Object.values(profileDirs).forEach((dir) => fs.rmSync(dir, { recursive: true, force: true }));
 }

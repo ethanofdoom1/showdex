@@ -80,4 +80,5 @@ try {
   console.log('Showdown loaded and Showdex injected:', result);
 } finally {
   await context.close();
+  fs.rmSync(userDataDir, { recursive: true, force: true });
 }
