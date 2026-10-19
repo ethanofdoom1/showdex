@@ -9,7 +9,8 @@
  *
  * `SEED=1,2,3,4` picks the battle; `SYNCS=turn|line` syncs once per turn (default) or once per log
  * line (the worst case: a sync for every step the client plays); `PROFILE=1` also writes a CPU
- * profile of the replay and prints its top self-time functions.
+ * profile of the replay and prints its top self-time functions. `TEAM=transform` leads p1 with a Transform
+ * Ditto (Limber, so it has hits from before AND after it transforms).
  */
 import { execFile } from 'node:child_process';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -26,6 +27,7 @@ const simRoot = process.env.SIM_ROOT || path.resolve(repoRoot, '..', 'pokemon-sh
 const seed = (process.env.SEED || '1,2,3,4').split(',').map(Number);
 const syncMode = process.env.SYNCS || 'turn';
 const profile = process.env.PROFILE === '1';
+const teamMode = process.env.TEAM || 'default';
 
 const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'showdex-replay-profile-'));
 const entryPath = path.join(tempDirectory, 'entry.mjs');
@@ -61,6 +63,10 @@ const teams = {
     set('Weavile', 'Choice Band', 'Pressure', 'Jolly', ev(0, 252, 4, 0, 0, 252), ['Triple Axel', 'Knock Off', 'Ice Shard', 'Low Kick']),
   ],
 };
+
+if (teamMode === 'transform') {
+  teams.p1[0] = set('Ditto', 'Leftovers', 'Limber', 'Bold', ev(252, 0, 252, 0, 4, 0), ['Transform', 'Psychic', 'Ice Beam', 'Recover']);
+}
 
 // ---- 1. the battle, from the real simulator ----
 const simRequire = createRequire(path.join(simRoot, 'package.json'));
@@ -204,6 +210,10 @@ const applyLive = (line) => {
 
   if (['switch', 'drag'].includes(type) && pokemon) {
     pokemon.boosts = { ...zero };
+    // switching out ends a Transform
+    delete pokemon.transformedForme;
+    delete pokemon.transformedBaseStats;
+    pokemon.types = [...gen.species.get(pokemon.speciesForme.toLowerCase().replace(/[^a-z0-9]+/g, '')).types];
     state[pokemon.playerKey].selectionIndex = state[pokemon.playerKey].pokemon.indexOf(pokemon);
     state[pokemon.playerKey].activeIndices = [state[pokemon.playerKey].selectionIndex];
     setHp(pokemon, parts[4]);
@@ -218,6 +228,13 @@ const applyLive = (line) => {
     const amount = Number(parts[4]) * (type === '-boost' ? 1 : -1);
 
     pokemon.boosts = { ...pokemon.boosts, [stat]: Math.max(-6, Math.min(6, (pokemon.boosts[stat] || 0) + amount)) };
+  } else if (type === '-transform' && pokemon && find(parts[3])) {
+    // as the Calcdex shows it: the target's forme, base stats (no HP) and types
+    const { hp, ...transformedBaseStats } = find(parts[3]).baseStats;
+
+    pokemon.transformedForme = find(parts[3]).speciesForme;
+    pokemon.transformedBaseStats = transformedBaseStats;
+    pokemon.types = [...find(parts[3]).types];
   } else if (type === '-clearallboost') {
     [...state.p1.pokemon, ...state.p2.pokemon].forEach((p) => { p.boosts = { ...zero }; });
   } else if (type === '-item' && pokemon) {
@@ -310,6 +327,7 @@ process.stdout.write(JSON.stringify({
   accuracy,
   syncMode: SYNCS,
   logLines: lines.length,
+  transforms: lines.filter((line) => line.startsWith("|-transform|")).length,
   turns: turn,
   syncCount: syncs.length,
   finalEvents: lastEventCount,
