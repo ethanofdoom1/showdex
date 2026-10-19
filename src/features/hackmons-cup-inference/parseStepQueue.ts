@@ -32,6 +32,11 @@ interface PendingMove {
    */
   orderForced?: boolean;
 
+  /**
+   * Whether the mover was transformed when it moved: its Speed was its target's, not its own.
+   */
+  transformed?: boolean;
+
   // the turn's history as the sim reads it when this move runs (see turnHistoryPowerDoubled())
   lastTurnFailed?: boolean;
   sideFaintedLastTurn?: boolean;
@@ -295,6 +300,9 @@ interface ChunkMutableState {
   moveRepeatState: Map<string, { moveId: string; count: number; }>;
   defenseCurlState: Set<string>;
   dynamaxedState: Set<string>;
+  // mons transformed since their last switch-in: Transform copies the target's actual non-HP stats
+  // (sim transformInto(): storedStats), which no spread of the copier's own can model
+  transformedState: Set<string>;
   activeStintState: Map<string, number>;
   activeSlotStintState: Map<string, number>;
   trickRoomActive: boolean;
@@ -334,6 +342,7 @@ const createParserState = (): ChunkMutableState => ({
   // moveRepeatState's own scaling, and (unlike moveRepeatState) never resets on a miss/different move
   defenseCurlState: new Set(),
   dynamaxedState: new Set(),
+  transformedState: new Set(),
   // per-mon count of how many times it's been sent out (bumped on every switch-in) -- two of a mon's
   // moves sharing a stint but NOT sharing a moveName prove it wasn't Choice-locked during that stint
   activeStintState: new Map(),
@@ -386,6 +395,7 @@ const cloneParserState = (
   moveRepeatState: new Map([...state.moveRepeatState].map(([id, entry]) => [id, { ...entry }])),
   defenseCurlState: new Set(state.defenseCurlState),
   dynamaxedState: new Set(state.dynamaxedState),
+  transformedState: new Set(state.transformedState),
   activeStintState: new Map(state.activeStintState),
   activeSlotStintState: new Map(state.activeSlotStintState),
   trickRoomActive: state.trickRoomActive,
@@ -422,6 +432,7 @@ const processChunk = (
     moveRepeatState,
     defenseCurlState,
     dynamaxedState,
+    transformedState,
     activeStintState,
     activeSlotStintState,
     tailwindState,
@@ -577,7 +588,9 @@ const processChunk = (
             || tailwindState.has(fasterMove.attackerKey)
             || tailwindState.has(slowerMove.attackerKey)
             || !!fasterMove.orderForced
-            || !!slowerMove.orderForced,
+            || !!slowerMove.orderForced
+            || !!fasterMove.transformed
+            || !!slowerMove.transformed,
           attackerBoosts: cloneBoosts(fasterMove.boosts),
           defenderBoosts: cloneBoosts(slowerMove.boosts),
           attackerStatus: fasterMove.status,
@@ -639,6 +652,7 @@ const processChunk = (
           defenseCurled: defenseCurlState.has(attacker.id),
           attackerStint: (attacker.slot ? activeSlotStintState.get(attacker.slot) : null) || activeStintState.get(attacker.id) || 0,
           orderForced: orderForcedIds.has(attacker.id),
+          transformed: transformedState.has(attacker.id),
           lastTurnFailed: moveResultState.get(attacker.id)?.lastTurn === false,
           sideFaintedLastTurn: !!attacker.playerKey && faintedLastTurnState.has(attacker.playerKey),
           statsLoweredThisTurn: statsLoweredIds.has(attacker.id),
@@ -696,6 +710,7 @@ const processChunk = (
           moveResultState.delete(pokemon.id);
           defenseCurlState.delete(pokemon.id);
           dynamaxedState.delete(pokemon.id);
+          transformedState.delete(pokemon.id);
           activeStintState.set(pokemon.id, (activeStintState.get(pokemon.id) || 0) + 1);
           if (pokemon.slot) {
             activeSlotStintState.set(pokemon.slot, (activeSlotStintState.get(pokemon.slot) || 0) + 1);
@@ -816,6 +831,16 @@ const processChunk = (
             teraType,
             terastallized: true,
           });
+        }
+
+        return;
+      }
+
+      if (type === '-transform') {
+        const pokemon = parsePokemonToken(parts[2]);
+
+        if (pokemon.id) {
+          transformedState.add(pokemon.id);
         }
 
         return;
@@ -1393,7 +1418,12 @@ const processChunk = (
         count: (pendingMove.moveRepeatCount || 0) + 1,
       });
 
-      if (FormulaBypassingMoveIds.has(formatId(pendingMove.moveName))) {
+      // a transformed side's stats were its target's (and its own HP), so its spread can't model the hit
+      if (
+        FormulaBypassingMoveIds.has(formatId(pendingMove.moveName))
+          || transformedState.has(pendingMove.attackerId)
+          || transformedState.has(defender.id)
+      ) {
         hpState.set(defender.id, hp.hp);
         maxHpState.set(defender.id, maxHp);
         ignoredEventCount++;

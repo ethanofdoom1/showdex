@@ -638,6 +638,37 @@ if (MODE === 'forward') {
   results.push({ ...control, ok: observed.every((d) => d > 0) && !control.modifiers.length && !control.outliers });
   results.push({ ...transformed, ok: !transformed.modifiers.length && !transformed.outliers });
 
+  // the parser drops every hit with a transformed side, so a modelled hit is of an untransformed mon --
+  // even when that mon has transformed SINCE. Vaporeon (Water: Spark super-effective) took these hits
+  // before transforming into Decidueye-Hisui; read with the live transform, Spark looked resisted and
+  // the hits mis-sized
+  const noTeraState = (suffix, transformed) => {
+    const state = createState(suffix);
+
+    return {
+      ...state,
+      p1: { ...state.p1, pokemon: state.p1.pokemon.map((mon) => (mon.speciesForme === 'Vaporeon' && transformed ? { ...mon, ...decidueye } : mon)) },
+      p2: { ...state.p2, pokemon: state.p2.pokemon.map((mon) => ({ ...mon, ability: '', dirtyAbility: null, item: '', dirtyItem: null })) },
+    };
+  };
+  const inferSince = (name, transformed, damages) => {
+    const events = damages.map((damage, i) => ({
+      ...damageEvent({ id: name + i, turn: i + 1, moveName: 'Spark', damage, effectiveness: 'super' }),
+      defenderSnapshot: {},
+    }));
+    const estimate = (Object.values(inferHackmonsSpread(noTeraState(name, transformed), events, 0))[0] || {}).estimate || {};
+
+    return {
+      ranges: (estimate.matches || []).map((m) => JSON.stringify(m.rollRange)),
+      modifiers: (estimate.inferredModifiers || []).map((m) => m.modifier?.id + (m.adopted ? ' (adopted)' : '')),
+      outliers: (estimate.matches || []).filter((m) => !!m.outlier).length,
+    };
+  };
+  const sinceObserved = inferSince('since-truth', false, [1, 1]).ranges.map(median);
+  const since = { name: 'transformed-since-the-hits', observed: sinceObserved, ...inferSince('since', true, sinceObserved) };
+
+  results.push({ ...since, ok: sinceObserved.every((d) => d > 0) && !since.modifiers.length && !since.outliers });
+
   FAILED = results.some((result) => !result.ok);
 } else if (MODE === 'speedevidence') {
   // turn order is Speed evidence only once priority is known and the known mon's own Speed is

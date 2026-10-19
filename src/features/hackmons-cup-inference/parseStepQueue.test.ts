@@ -103,6 +103,55 @@ describe('parseHackmonsInferenceEvents()', () => {
     ]);
   });
 
+  it('drops hits and turn orders involving a transformed mon until it switches out', () => {
+    // reported: Transform into Gothitelle, tera Poison, switch out and back, Transform into Decidueye-Hisui
+    const { events, ignoredEventCount } = parseHackmonsInferenceEvents([
+      '|switch|p1a: Mew|Mew|100/100',
+      '|switch|p2a: Gothitelle|Gothitelle, F|100/100',
+      '|turn|1',
+      '|move|p1a: Mew|Transform|p2a: Gothitelle',
+      '|-transform|p1a: Mew|p2a: Gothitelle',
+      '|move|p2a: Gothitelle|Psychic|p1a: Mew',
+      '|-damage|p1a: Mew|90/100',
+      '|turn|2',
+      '|-terastallize|p1a: Mew|Poison',
+      '|move|p1a: Mew|Calm Mind|p1a: Mew',
+      '|move|p2a: Gothitelle|Calm Mind|p2a: Gothitelle',
+      '|turn|3',
+      '|switch|p1a: Vaporeon|Vaporeon|100/100',
+      '|switch|p2a: Decidueye|Decidueye-Hisui, M|100/100',
+      '|turn|4',
+      '|switch|p1a: Mew|Mew, tera:Poison|90/100',
+      '|move|p2a: Decidueye|Leaf Blade|p1a: Mew',
+      '|-damage|p1a: Mew|70/100',
+      '|turn|5',
+      '|move|p1a: Mew|Transform|p2a: Decidueye',
+      '|-transform|p1a: Mew|p2a: Decidueye',
+      '|move|p2a: Decidueye|Spark|p1a: Mew',
+      '|-damage|p1a: Mew|50/100',
+      '|turn|6',
+      '|move|p1a: Mew|Spark|p2a: Decidueye',
+      '|-resisted|p2a: Decidueye',
+      '|-damage|p2a: Decidueye|80/100',
+      '|move|p2a: Decidueye|Spark|p1a: Mew',
+      '|-damage|p1a: Mew|30/100',
+    ], 'transformed');
+
+    const damageEvents = events.filter((event) => event.eventType !== 'speed');
+    const speedEvents = events.filter((event) => event.eventType === 'speed');
+
+    expect(damageEvents.map((event) => [event.turn, event.moveName])).toEqual([[4, 'Leaf Blade']]);
+    expect(damageEvents[0].defenderSnapshot).toMatchObject({ terastallized: true, teraType: 'Poison' });
+    expect(ignoredEventCount).toBe(4);
+    // the Transform itself ran on Mew's own Speed; every later order involves a transformed Mew
+    expect(speedEvents.map((event) => [event.turn, !!event.speedOrderSuppressed])).toEqual([
+      [1, false],
+      [2, true],
+      [5, false],
+      [6, true],
+    ]);
+  });
+
   it('keeps the status a switch-in line carries, and clears one it no longer shows', () => {
     const { events } = parseHackmonsInferenceEvents([
       '|switch|p1a: Skarmory|Skarmory, L50|100/100',

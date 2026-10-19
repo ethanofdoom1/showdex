@@ -888,7 +888,9 @@ const applyEventPokemonSnapshot = (
   }
 
   const dex = getGenDexForFormat(format);
-  const speciesTypes = dex?.species.get((pokemon.transformedForme || pokemon.speciesForme) as never)?.types as Showdown.TypeName[];
+  // the parser drops every event with a transformed side, so any snapshot is of an untransformed mon,
+  // whatever it has transformed into since (the live transformedForme would reshape past events)
+  const speciesTypes = dex?.species.get(pokemon.speciesForme as never)?.types as Showdown.TypeName[];
   const eventTypes = snapshot.typeChanged && snapshot.types?.length
     ? snapshot.types
     : speciesTypes?.length
@@ -913,6 +915,9 @@ const applyEventPokemonSnapshot = (
 
   return applyEventItem({
     ...pokemon,
+    transformedForme: null,
+    transformedBaseStats: null,
+    transformedLevel: null,
     types: types?.length ? [...types] : pokemon.types,
     dirtyTypes: [],
     teraType: snapshot.teraType || null,
@@ -1868,22 +1873,24 @@ const damagePokemonSignature = (
   faintCountOverridden?: boolean,
   statusOverridden?: boolean,
   spreadOverridden?: boolean,
+  snapshotOverridden?: boolean,
 ): unknown[] => [
   pokemon?.calcdexId,
   pokemon?.source,
   pokemon?.speciesForme,
-  pokemon?.transformedForme,
+  // applyEventPokemonSnapshot() replaces these: a Transform or tera now no longer re-keys every past event
+  snapshotOverridden ? null : pokemon?.transformedForme,
   pokemon?.baseStats,
   pokemon?.dirtyBaseStats,
-  pokemon?.transformedBaseStats,
+  snapshotOverridden ? null : pokemon?.transformedBaseStats,
   pokemon?.level,
-  pokemon?.transformedLevel,
+  snapshotOverridden ? null : pokemon?.transformedLevel,
   pokemon?.gender,
-  pokemon?.types,
-  pokemon?.dirtyTypes,
-  pokemon?.terastallized,
-  pokemon?.teraType,
-  pokemon?.dirtyTeraType,
+  snapshotOverridden ? null : pokemon?.types,
+  snapshotOverridden ? null : pokemon?.dirtyTypes,
+  snapshotOverridden ? null : pokemon?.terastallized,
+  snapshotOverridden ? null : pokemon?.teraType,
+  snapshotOverridden ? null : pokemon?.dirtyTeraType,
   pokemon?.ability,
   pokemon?.abilityToggled,
   pokemon?.item,
@@ -1993,6 +2000,7 @@ const damageContextSignature = (
       typeof event.attackerFaintCount === 'number',
       typeof event.attackerStatus === 'string',
       context.relation === 'attacker',
+      !!event.attackerSnapshot,
     ),
     context.defenderMatch?.playerKey,
     damagePokemonSignature(
@@ -2001,6 +2009,7 @@ const damageContextSignature = (
       typeof event.defenderFaintCount === 'number',
       typeof event.defenderStatus === 'string',
       context.relation === 'defender',
+      !!event.defenderSnapshot,
     ),
     context.relation,
     context.influence,
@@ -2854,7 +2863,8 @@ const isCandidateNfe = (
 ): boolean => {
   const pokemon = eventCandidatePokemon(context);
   const dex = getGenDexForFormat(state.format);
-  const speciesId = formatId(pokemon?.transformedForme || pokemon?.speciesForme);
+  // every modelled event is of an untransformed mon (see applyEventPokemonSnapshot())
+  const speciesId = formatId(pokemon?.speciesForme);
 
   return !!speciesId && !!dex?.species.get(speciesId as never)?.nfe;
 };
