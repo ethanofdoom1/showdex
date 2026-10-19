@@ -596,6 +596,49 @@ if (MODE === 'forward') {
   results.push({ ...galvanize, ok: !galvanize.unmodelled && galvanize.modifiers.includes('ability-ate-electric (adopted)') });
 
   FAILED = results.some((result) => !result.ok);
+} else if (MODE === 'transformtera') {
+  // a terastallized mon keeps its tera type through Transform (sim Pokemon.getTypes()). Observations
+  // come from the SAME hits on an untransformed tera-Poison Vaporeon (Spark neutral), then are read
+  // with Vaporeon transformed into Decidueye-Hisui (Grass/Fighting: Spark resisted if tera is lost)
+  const decidueye = { transformedForme: 'Decidueye-Hisui', transformedBaseStats: stats(88, 112, 80, 95, 95, 60), types: ['Grass', 'Fighting'] };
+  const teraState = (suffix, transformed) => {
+    const state = createState(suffix);
+
+    return {
+      ...state,
+      p1: { ...state.p1, pokemon: state.p1.pokemon.map((mon) => (mon.speciesForme === 'Vaporeon'
+        ? { ...mon, teraType: 'Poison', terastallized: true, ...(transformed ? decidueye : null) }
+        : mon)) },
+      p2: { ...state.p2, pokemon: state.p2.pokemon.map((mon) => ({ ...mon, ability: '', dirtyAbility: null, item: '', dirtyItem: null })) },
+    };
+  };
+  const spark = (id, damage) => ({
+    ...damageEvent({ id, turn: Number(id.slice(-1)) + 1, moveName: 'Spark', damage }),
+    defenderSnapshot: { teraType: 'Poison', terastallized: true },
+  });
+  const summarize = (name, transformed, damages) => {
+    const events = damages.map((damage, i) => ({ ...spark(name + i, damage), endHp: Math.max(1, SPECIES.Vaporeon.maxhp - damage) }));
+    const estimate = (Object.values(inferHackmonsSpread(teraState(name, transformed), events, 0))[0] || {}).estimate || {};
+    const matches = estimate.matches || [];
+
+    return {
+      name,
+      ranges: matches.map((m) => JSON.stringify(m.rollRange)),
+      modifiers: (estimate.inferredModifiers || []).map((m) => m.modifier?.id + (m.adopted ? ' (adopted)' : '')),
+      outliers: matches.filter((m) => !!m.outlier).length,
+    };
+  };
+
+  const truth = summarize('tera-untransformed', false, [1, 1]);
+  const median = (range) => { const [lo, hi] = JSON.parse(range); return Math.round((lo + hi) / 2); };
+  const observed = truth.ranges.map(median);
+  const control = summarize('control-tera-untransformed', false, observed);
+  const transformed = summarize('tera-then-transform', true, observed);
+
+  results.push({ ...control, ok: observed.every((d) => d > 0) && !control.modifiers.length && !control.outliers });
+  results.push({ ...transformed, ok: !transformed.modifiers.length && !transformed.outliers });
+
+  FAILED = results.some((result) => !result.ok);
 } else if (MODE === 'speedevidence') {
   // turn order is Speed evidence only once priority is known and the known mon's own Speed is
   // modelled. Deoxys-Attack/Vaporeon are p1 = authPlayerKey (known side); Mew's ability is unknown.
