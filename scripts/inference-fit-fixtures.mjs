@@ -30,6 +30,7 @@ const entrySource = String.raw`
 import { Generations, calculate } from '@smogon/calc';
 import { calcPokemonSpreadStats, createSmogonField, createSmogonMove, createSmogonPokemon } from '@showdex/utils/calc';
 import { inferHackmonsSpread } from '@showdex/features/hackmons-cup-inference/inferHackmonsSpread';
+import { buildModifierSelectionPayload } from '@showdex/features/hackmons-cup-inference/modifierSelection';
 
 globalThis.Dex = {
   forGen: (gen) => {
@@ -668,6 +669,97 @@ if (MODE === 'forward') {
   const since = { name: 'transformed-since-the-hits', observed: sinceObserved, ...inferSince('since', true, sinceObserved) };
 
   results.push({ ...since, ok: sinceObserved.every((d) => d > 0) && !since.modifiers.length && !since.outliers });
+
+  FAILED = results.some((result) => !result.ok);
+} else if (MODE === 'applycoherence') {
+  // what Apply writes must make the Calcdex show the rolls the estimate promised. Medicham's first
+  // ability is Pure Power (x2 Atk): left empty, @smogon/calc fills it in, so an "unknown" ability has
+  // to be applied as the no-ability the search modelled. The Calcdex side is computed the way the UI
+  // does it -- createSmogonPokemon() on the mon AS APPLIED, none of the inference's assumptions
+  SPECIES.Medicham = { base: stats(60, 60, 75, 60, 75, 80), types: ['Fighting', 'Psychic'], evs: zeroStats, nature: 'Serious', maxhp: 261 };
+
+  const medichamState = (suffix, ability) => {
+    const state = createState(suffix);
+    const medicham = pokemon({ side: 'p2', name: 'Medicham', calcdexId: 'p2-medicham-' + suffix, moves: ['Zen Headbutt'] });
+
+    return {
+      ...state,
+      // the known side's Speed is read from its server stats, as for a real battle's own team
+      p1: { ...state.p1, pokemon: state.p1.pokemon.map((mon) => ({ ...mon, serverStats: calcPokemonSpreadStats(state.format, mon) })) },
+      p2: { ...state.p2, pokemon: [{ ...medicham, ability, dirtyAbility: null, item: '', dirtyItem: null }] },
+    };
+  };
+  const hit = (id, turn, damage, abilityConfirmed) => ({
+    eventType: 'damage', id, turn,
+    attackerKey: 'p2', defenderKey: 'p1',
+    attackerId: 'p2a: Medicham', defenderId: 'p1a: Vaporeon',
+    attackerName: 'p2: Medicham', defenderName: 'p1: Vaporeon',
+    moveName: 'Zen Headbutt', damage,
+    attackerStartHp: SPECIES.Medicham.maxhp, attackerMaxHp: SPECIES.Medicham.maxhp,
+    startHp: SPECIES.Vaporeon.maxhp, endHp: Math.max(1, SPECIES.Vaporeon.maxhp - damage), maxHp: SPECIES.Vaporeon.maxhp,
+    crit: false, effectiveness: 'neutral', rawLine: '|-damage|',
+    attackerSnapshot: { abilityConfirmed },
+  });
+  // Medicham (max 284 Spe) moving before the 336-Spe Deoxys-Attack takes a Speed class (Choice Scarf, ...)
+  const outsped = (id) => ({
+    eventType: 'speed', id, turn: 9,
+    attackerKey: 'p2', defenderKey: 'p1', attackerId: 'p2a: Medicham', defenderId: 'p1a: Deoxys-Attack',
+    attackerName: 'p2: Medicham', defenderName: 'p1: Deoxys-Attack',
+    moveName: 'Zen Headbutt', slowerMoveName: 'Psycho Boost', rawLine: '|move|',
+  });
+  const estimateFor = (name, ability, damages, extra = []) => {
+    const state = medichamState(name, ability);
+    const events = [...damages.map((damage, i) => hit(name + i, i + 1, damage, !!ability)), ...extra];
+
+    return { state, estimate: (Object.values(inferHackmonsSpread(state, events, 0))[0] || {}).estimate || {} };
+  };
+  // the Calcdex's own rolls for one Zen Headbutt off the mon as Apply left it
+  const calcdexRange = (state, payload) => {
+    const applied = { ...state.p2.pokemon[0], ...payload };
+    const mon = { ...applied, spreadStats: calcPokemonSpreadStats(state.format, applied) };
+    const vaporeon = state.p1.pokemon.find((p) => p.speciesForme === 'Vaporeon');
+    const field = createSmogonField(state.format, state.gameType, state.field, state.p2, state.p1, [state.p1, state.p2]);
+    const attacker = createSmogonPokemon(state.format, state.gameType, mon, 'Zen Headbutt', vaporeon);
+    const defender = createSmogonPokemon(state.format, state.gameType, vaporeon, null, mon);
+    const [move] = createSmogonMove(state.format, mon, 'Zen Headbutt', vaporeon, field) || [];
+    const rolls = calculate(Dex.forGen(9), attacker, defender, move, field, { hitBasePowers: null, excludeHazardsDamage: true, excludeEotDamage: true })
+      .damage.filter((v) => typeof v === 'number');
+
+    return { ability: attacker.ability, item: attacker.item || null, range: [Math.min(...rolls), Math.max(...rolls)] };
+  };
+  const median = ([lo, hi]) => Math.round((lo + hi) / 2);
+  const coherent = (name, state, payload, matches) => {
+    const shown = calcdexRange(state, payload);
+    const promised = matches.map((m) => m.rollRange);
+
+    return {
+      name,
+      applied: { dirtyAbility: payload.dirtyAbility, dirtyItem: payload.dirtyItem },
+      calcdex: shown,
+      promised,
+      ok: promised.length > 0 && promised.every((range) => range?.[0] === shown.range[0] && range?.[1] === shown.range[1]),
+    };
+  };
+
+  // the estimate itself, ability never revealed
+  const truth = estimateFor('unrevealed-truth', '', [1, 1]).estimate.matches.map((m) => median(m.rollRange));
+  const unrevealed = estimateFor('unrevealed', '', truth);
+  results.push(coherent('estimate-unrevealed-ability', unrevealed.state,
+    buildModifierSelectionPayload({ selection: unrevealed.estimate.selection, candidateSpread: unrevealed.estimate }), unrevealed.estimate.matches || []));
+
+  // an item class applied from the hypothesis list (the outlier path): its set must still have no ability
+  const scarfed = estimateFor('scarfed', '', truth, [outsped('scarfed-speed')]);
+  const itemClass = (scarfed.estimate.inferredModifiers || []).find((m) => m.modifier?.slot === 'item');
+  results.push(itemClass
+    ? { ...coherent('hypothesis-item-unrevealed-ability', scarfed.state, buildModifierSelectionPayload(itemClass), itemClass.candidateMatches || []), modifier: itemClass.modifier.id }
+    : { name: 'hypothesis-item-unrevealed-ability', ok: false, error: 'no item class proposed', proposed: (scarfed.estimate.inferredModifiers || []).map((m) => m.modifier?.id) });
+
+  // control: a revealed Pure Power is the set, and stays applied
+  const revealedTruth = estimateFor('revealed-truth', 'Pure Power', [1, 1]).estimate.matches.map((m) => median(m.rollRange));
+  const revealed = estimateFor('revealed', 'Pure Power', revealedTruth);
+  const revealedResult = coherent('revealed-ability-kept', revealed.state,
+    buildModifierSelectionPayload({ selection: revealed.estimate.selection, candidateSpread: revealed.estimate }), revealed.estimate.matches || []);
+  results.push({ ...revealedResult, ok: revealedResult.ok && revealedResult.calcdex.ability === 'Pure Power' });
 
   FAILED = results.some((result) => !result.ok);
 } else if (MODE === 'speedevidence') {

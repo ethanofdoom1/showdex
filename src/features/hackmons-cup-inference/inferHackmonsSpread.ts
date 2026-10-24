@@ -33,7 +33,7 @@ import {
   speedEventLogLikelihood,
   type ObservedDamagePmfEntry,
 } from './damageLikelihood';
-import { isInferenceFormat } from './isInferenceFormat';
+import { NoAbility, isInferenceFormat } from './isInferenceFormat';
 import {
   type HackmonsDamageMatch,
   type HackmonsDamageOutlier,
@@ -490,6 +490,7 @@ const modifierOverrideFromClass = (
   ...(modifier.scope === 'spe' ? { speedMultiplier: modifier.multiplier } : null),
 });
 
+// null leaves the live ability & item -- revealed, else none (see NoAbility) -- as the search modelled them
 const modifierSelectionFromOverride = (
   override?: ModifierOverride,
 ): HackmonsModifierSelection => ({
@@ -928,10 +929,6 @@ const applyEventPokemonSnapshot = (
   }, snapshot);
 };
 
-// Illuminate has no onModify*/onDamage*/onBasePower* hooks anywhere in the (patched) @smogon/calc
-// mechanics files -- it's a safe "no ability" sentinel for the search-candidate mon specifically
-const NeutralAbility = 'Illuminate' as AbilityName;
-
 const applyInferencePokemonAssumptions = (
   pokemon: CalcdexPokemon,
   neutralizeUnconfirmedAbility?: boolean,
@@ -957,7 +954,7 @@ const applyInferencePokemonAssumptions = (
   // that landed under a real self-inflicted drop). All four drop-timing/geometry combinations verify
   // clean in e2e (which can't click the UI), so this is the only remaining override channel.
   dirtyBoosts: null,
-  ...(neutralizeUnconfirmedAbility ? { ability: NeutralAbility } : null),
+  ...(neutralizeUnconfirmedAbility ? { ability: NoAbility } : null),
   ...(modifierOverride?.item ? { item: modifierOverride.item } : null),
   ...(modifierOverride?.ability ? { ability: modifierOverride.ability } : null),
 });
@@ -1349,7 +1346,7 @@ const applyEventGrounding = (
   return {
     ...defender,
     types: types.length ? types : ['Normal'] as Showdown.TypeName[],
-    ...(levitating ? { ability: NeutralAbility } : null),
+    ...(levitating ? { ability: NoAbility } : null),
   };
 };
 

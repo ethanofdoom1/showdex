@@ -40,6 +40,7 @@ import {
   PokemonNatureBoosts,
   PokemonRuinAbilities,
 } from '@showdex/consts/dex';
+import { NoAbility, isInferenceFormat } from '@showdex/features/hackmons-cup-inference/isInferenceFormat';
 import { type CalcdexPlayerSide } from '@showdex/interfaces/calc';
 import { useColorScheme, useHonkdexSettings } from '@showdex/redux/store';
 import { calcPokemonHpPercentage } from '@showdex/utils/calc';
@@ -133,7 +134,10 @@ export const PokeInfo = ({
   const nickname = (hasNickname(pokemon) && settings?.showNicknames && pokemon.name) || null;
 
   const hpPercentage = calcPokemonHpPercentage(pokemon);
-  const abilityName = pokemon?.dirtyAbility ?? pokemon?.ability;
+  // an inference format's unset ability is calculated as NoAbility (createSmogonPokemon()), so show it
+  const abilityName = pokemon?.dirtyAbility
+    || pokemon?.ability
+    || (isInferenceFormat(format) && !!pokemon?.speciesForme ? NoAbility : null);
   const itemName = pokemon?.dirtyItem ?? pokemon?.item;
 
   const abilityOptions = React.useMemo(() => buildAbilityOptions(

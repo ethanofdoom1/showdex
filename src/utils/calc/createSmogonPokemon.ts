@@ -11,6 +11,7 @@ import {
   PokemonRuinAbilities,
   PokemonSturdyAbilities,
 } from '@showdex/consts/dex';
+import { NoAbility, isInferenceFormat } from '@showdex/features/hackmons-cup-inference/isInferenceFormat';
 import { type CalcdexPokemon } from '@showdex/interfaces/calc';
 import { clamp, formatId, nonEmptyObject } from '@showdex/utils/core';
 import { logger } from '@showdex/utils/debug';
@@ -80,7 +81,11 @@ export const createSmogonPokemon = (
       ? null
       : pokemon.status;
 
-  const ability = (!legacy && (pokemon.dirtyAbility || pokemon.ability)) || null;
+  const ability = (!legacy && (
+    pokemon.dirtyAbility
+      || pokemon.ability
+      || (isInferenceFormat(format) ? NoAbility : null)
+  )) || null;
   const abilityId = formatId(ability);
 
   // note: these are in the PokemonToggleAbilities list, but isn't technically toggleable, per se.

@@ -212,10 +212,15 @@ export const HackmonsSpreadEstimate = ({
   const selectedEvents = serializeMatches(selectedMatches);
   const modifierEvents = serializeModifiers(inferredModifiers);
 
-  const resetEstimate = () => dispatch(calcdexSlice.actions.resetHackmonsInference({
-    battleId: state.battleId,
-    pokemonId,
-  }));
+  const resetEstimate = () => {
+    // the mon still holds the last applied set (a hypothesis's ability/item included); re-arming the
+    // auto-apply writes the recomputed estimate's whole set over it once it arrives
+    autoAppliedEstimates.delete(`${state.battleId}:${pokemonId}`);
+    dispatch(calcdexSlice.actions.resetHackmonsInference({
+      battleId: state.battleId,
+      pokemonId,
+    }));
+  };
 
   const resetSelection = () => {
     setSelectedModifierIds((selected) => {

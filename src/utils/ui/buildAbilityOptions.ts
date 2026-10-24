@@ -1,5 +1,6 @@
 import { type AbilityName } from '@smogon/calc';
 import { type DropdownOption } from '@showdex/components/form';
+import { NoAbility, isInferenceFormat } from '@showdex/features/hackmons-cup-inference/isInferenceFormat';
 import { type CalcdexPokemon, type CalcdexPokemonAlt, type CalcdexPokemonUsageAlt } from '@showdex/interfaces/calc';
 import { dedupeArray, formatId } from '@showdex/utils/core';
 import { detectGenFromFormat, detectLegacyGen, legalLockedFormat } from '@showdex/utils/dex';
@@ -179,6 +180,23 @@ export const buildAbilityOptions = (
     });
 
     filterAbilities.push(ability);
+  }
+
+  // the ability the calc is using when no group above lists it -- an inference format's unset one is
+  // NoAbility (see createSmogonPokemon()), or one set from outside the dropdown (a Hackmons hypothesis).
+  // without an option for its own value, the dropdown reads blank
+  const calcAbility = pokemon.dirtyAbility || pokemon.ability || (isInferenceFormat(format) ? NoAbility : null);
+
+  if (calcAbility && !filterAbilities.includes(calcAbility)) {
+    options.unshift({
+      label: translateHeader('Selected'),
+      options: [{
+        label: translate(calcAbility),
+        value: calcAbility,
+      }],
+    });
+
+    filterAbilities.push(calcAbility);
   }
 
   // show all possible abilities if format is not provided, is not legal-locked, or
