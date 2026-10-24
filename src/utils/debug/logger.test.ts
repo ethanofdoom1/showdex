@@ -3,7 +3,14 @@ import {
 } from 'vitest';
 
 const capture = vi.fn();
-vi.mock('./teledex', () => ({ teledex: { capture: (...a: unknown[]) => capture(...a) } }));
+// emit() asks shouldCapture() first and bails when a log would neither print nor be captured; without it
+// here, the call throws inside emit()'s never-break-the-app catch and capture() is silently never reached
+vi.mock('./teledex', () => ({
+  teledex: {
+    shouldCapture: () => true,
+    capture: (...a: unknown[]) => capture(...a),
+  },
+}));
 
 const { logger } = await import('./logger');
 
